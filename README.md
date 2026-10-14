@@ -2,6 +2,10 @@
 
 Đồ án xe tự hành hỗ trợ mua sắm dùng 3 module BU01 (DW1000), mỗi module nối với một ESP32 thường. Người mang Tag; hai Anchor đặt trên xe.
 
+## Bản thử A1 + LiDAR (14/10/2026)
+
+Xem [sketch A1_Lidar và hướng dẫn](firmware/A1_Lidar/README.md): calibration lấy A2 làm mốc, khóa/bám mục tiêu UWB–LiDAR, dừng và xác nhận lại theo state. Dữ liệu LiDAR chuyển sang GPIO32/UART1; A2 giữ UART2 RX16/TX17. Bản này chỉ xuất lệnh logic để test, chưa điều khiển servo/động cơ xe. Cần **Tag và A2 UART hiện tại của chủ dự án**, không dùng hai sketch lịch sử dưới đây thay thế. Đã kiểm tra logic bằng host mocks; chưa biên dịch ESP32 hoặc thử phần cứng.
+
 ## Phiên bản gốc
 
 Đây là code do chủ dự án cung cấp ngày 02/10/2026 (giờ Việt Nam), trước khi chuyển xử lý góc sang Anchor 1 qua UART.
@@ -66,3 +70,4 @@ Nguồn tham khảo của dự án:
 - [jremington UWB Indoor Localization](https://github.com/jremington/UWB-Indoor-Localization_Arduino)
 
 Repo này chưa kèm thư viện bên thứ ba và chưa chỉ định giấy phép cho code dự án.
+
