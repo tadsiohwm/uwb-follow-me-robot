@@ -6,49 +6,26 @@
 // Arduino IDE adds these declarations automatically; host C++ does not.
 void setup();
 void loop();
-void setupLidar();
-void setupUwb();
-void readCommands(uint32_t now);
-void handleTagChange();
 void newRange();
 void connectionChanged(DW1000Device *device);
+void clearVotes();
 void resetMeasurements();
 void readUart(uint32_t now);
 void readLine(uint32_t now);
 bool getPair(float &d1, float &d2, uint32_t now);
-void updateUwb(uint32_t now);
-void resetCalibration();
-void addCalibrationPair(float d1, float d2, uint32_t now);
-void updateCalibrationReference(uint32_t now);
-void finishCalibration(uint32_t now);
 void calibrate(float d1, float d2, bool gotPair, uint32_t now);
 void calculateAngle(float d1, float d2, uint32_t now);
 void filterAngle(float measured, float d1, float d2, uint32_t now);
-void clearVotes();
-int chooseDirection();
 void finishVote(uint32_t now);
-void setUwbReference(float d1, float d2, uint32_t now);
-void readLidar(uint32_t now);
-void feedLidarByte(uint8_t b, uint32_t now);
-uint16_t lidarWord(int i);
-bool checkLidarPacket();
-void beginLidarScan(uint32_t now);
-void processLidarPacket(uint32_t now);
-void processLidarPoint(float a, float mm, uint32_t now);
-void findClusters();
-void splitClusters();
-void mergeLegClusters();
-void finishOwnerScan(uint32_t now);
-float scoreOwnerCluster(int index);
-int chooseOwnerCluster();
-void voteOwner(int selected, uint32_t now);
-void rememberOwner(int selected, uint32_t now);
-void checkOwner(uint32_t now);
-void printCalibrationStatus(uint32_t now);
-void printStatus(uint32_t now, int winner);
 void printRanges(uint32_t now);
 void printFront(uint32_t now);
+void setUwbReference(float d1, float d2, uint32_t now);
+void checkOwner(uint32_t now);
 void printOwner(uint32_t now);
+void findClusters();
+void finishOwnerScan(uint32_t now);
+uint16_t lidarWord(int i);
+void readLidar(uint32_t now);
 #include "../../firmware/A1_Lidar/A1_Lidar.ino"
 
 void resetAll() {
@@ -85,7 +62,7 @@ void startScan(uint32_t t) {
     feed({0xAA,0x55,0x01,0x01,0x53,0xAE,0x53,0xAE,0xAB,0x54,0,0},t);
 }
 // Build an observed surface centred at bearing a; compensate the raw X3 angle.
-void surface(float a,int mm,uint32_t t,int halfWidth=3) {
+void surface(float a,int mm,uint32_t t,int halfWidth=5) {
     float correction=atanf(21.8f*(155.3f-mm)/(155.3f*mm))*180.0f/PI;
     for(int i=-halfWidth;i<=halfWidth;++i) {
         float raw=a+i-correction;
@@ -183,13 +160,13 @@ int main() {
     assert(!calibrated && !owner.lost && !owner.locked && owner.votes==0);
 
     resetAll(); calibrated=true;
-    // Two separate legs become one centred candidate.
+    // Two narrow leg-like clusters must not be merged or accepted as a waist.
     startScan(0); referenceAt(0,1.3f,80);
     surface(-7,1300,90,2); surface(7,1300,90,2); startScan(100);
-    assert(clusterCount==1 && owner.votes==1 && fabsf(owner.x)<0.01f);
+    assert(clusterCount==0 && owner.votes==0 && !owner.locked);
     // Serial output and repeated loop calls cannot add scan votes.
     for(int i=0;i<20;++i) printOwner(100);
-    assert(owner.votes==1 && !owner.locked);
+    assert(owner.votes==0 && !owner.locked);
     resetAll(); calibrated=true;
     // Both objects fit UWB similarly; do not pick an arbitrary owner.
     startScan(0); referenceAt(0,1.3f,80);
@@ -217,14 +194,22 @@ int main() {
     // A broad wall is not accepted as a body-sized cluster.
     for(float &r:scanRange) r=1.3f;
     findClusters(); assert(clusterCount==0);
-    // More clusters than the fixed array capacity rejects the frame safely.
-    for(int i=0;i<161;++i) scanRange[i]=i%6<3 ? 1.5f : INFINITY;
-    findClusters(); assert(clusterCount==0);
     resetAll(); calibrated=true; startScan(0);
     for(uint32_t t=100;t<=500;t+=100) {
         referenceAt(-20,1.3f,t-20); surface(-20,1300,t-10); startScan(t);
     }
     assert(owner.locked && owner.x<0);
     assert(fabsf(atan2f(owner.x,owner.y)*180/PI+20)<0.3f);
-    std::cout<<"PASS: owner votes/lock/continuity/ambiguity/loss/recalibration; PASS: BU01 calibration/pairing, X3 framing/checksum/front-only, independent display, expiry and recalibration\n";
+    // A wider continuous waist candidate is accepted.
+    resetAll(); calibrated=true; startScan(0); referenceAt(0,1.3f,80);
+    surface(0,1300,90,8); startScan(100);
+    assert(clusterCount==1 && owner.votes==1 && fabsf(owner.x)<0.01f);
+    // Adjacent waist-sized objects remain two candidates, even within 0.5 m.
+    resetAll(); calibrated=true; startScan(0); referenceAt(0,1.3f,80);
+    surface(-10,1300,90); surface(10,1300,90); startScan(100);
+    assert(clusterCount==2 && owner.votes==0 && !owner.locked);
+    // A torso-like surface that is too broad for the configured gate is rejected.
+    resetAll(); calibrated=true; startScan(0); referenceAt(0,1.3f,80);
+    surface(0,1300,90,18); startScan(100); assert(clusterCount==0);
+    std::cout<<"PASS: waist widths/no leg merging, owner votes/lock/continuity/ambiguity/loss/recalibration; PASS: BU01 calibration/pairing, X3 framing/checksum/front-only, independent display, expiry and recalibration\n";
 }

@@ -2,9 +2,9 @@
 
 Đồ án xe tự hành hỗ trợ mua sắm dùng 3 module BU01 (DW1000), mỗi module nối với một ESP32 thường. Người mang Tag; hai Anchor đặt trên xe.
 
-## Bản hiện tại: BU01 mẫu + vote cụm chủ LiDAR (15/10/2026)
+## Bản hiện tại: BU01 mẫu + theo dõi cụm eo LiDAR (16/10/2026)
 
-[**A1_Lidar**](firmware/A1_Lidar/README.md) là một file `.ino` để xem **A1, A2, góc UWB, F phía trước và góc cụm chủ từ LiDAR**. Làm lại từ code UWB người dùng gửi: giữ calibration A2 làm mốc/bù A1, Kalman và vote UWB. Trong calibration, vote cụm khớp cả A1/A2 và hướng UWB qua 5 vòng quét liên tiếp; sau khi khóa thì theo dõi cụm và xuất `goc_lidar`. Mất chủ báo `MAT_CHU`, cần `c` để khóa lại. Không có bộ điều khiển state/xe hoặc số đo F trái/phải. LiDAR dùng GPIO32/UART1, motor25; A2 giữ RX16/TX17/UART2. Có lệnh `c` lấy lại calibration; vẫn chỉ xuất dữ liệu để thử.
+[**A1_Lidar**](firmware/A1_Lidar/README.md) là một file `.ino` để xem **A1, A2, góc UWB, F phía trước và góc cụm chủ từ LiDAR**. Làm lại từ code UWB người dùng gửi: giữ calibration A2 làm mốc/bù A1, Kalman và vote UWB. Dùng lại bản `A1_Lidar_TheoDoiChu` trước lần chia hàm, đổi sang một cụm eo liên tục (ngưỡng thử 15–65 cm, ít nhất 5 điểm góc), bỏ ghép hai chân. Đặt mặt phẳng LiDAR ngang eo, Tag đeo ở eo. Trong calibration, vote cụm khớp cả A1/A2 và hướng UWB qua 5 vòng quét liên tiếp; sau khi khóa thì theo dõi cụm và xuất `goc_lidar`. Mất chủ báo `MAT_CHU`, cần `c` để khóa lại. Không có bộ điều khiển state/xe hoặc số đo F trái/phải. LiDAR dùng GPIO32/UART1, motor25; A2 giữ RX16/TX17/UART2. Có lệnh `c` lấy lại calibration; vẫn chỉ xuất dữ liệu để thử.
 
 Từ đây, **“code BU01 mẫu”** là [bản UWB riêng được gửi ngày 15/10/2026](firmware/BU01_mau/BU01_mau.ino), không phải bản state. Lưu [Markdown gửi gốc](docs/source/BU01_mau_original.md) để đối chiếu.
 

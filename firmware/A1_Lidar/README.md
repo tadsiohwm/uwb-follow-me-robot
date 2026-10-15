@@ -1,34 +1,10 @@
-# BU01 mẫu + LiDAR X3 — vote và theo dõi cụm chủ
+# BU01 mẫu + LiDAR X3 — theo dõi cụm eo người
 
-Bản phát triển tiếp từ bản hiển thị A1/A2/F đã chạy của chủ dự án, ngày 15/10/2026. Thêm vote chọn cụm chủ trong lúc calibration, theo dõi cụm và xuất **goc_lidar**. Vẫn chỉ một file `A1_Lidar.ino`; không có file `.h` riêng của chương trình. **Code BU01 mẫu** riêng được giữ nguyên.
+Bản ngày 16/10/2026 phát triển từ **A1_Lidar_TheoDoiChu** theo yêu cầu chủ dự án. Dùng lại cấu trúc trước lần chia hàm; thay cụm chân bằng một cụm vùng eo, bỏ hoàn toàn bước ghép hai chân. Thêm vote chọn cụm chủ trong lúc calibration, theo dõi cụm và xuất **goc_lidar**. Vẫn chỉ một file `A1_Lidar.ino`; không có file `.h` riêng của chương trình. **Code BU01 mẫu** riêng được giữ nguyên.
 
 Giữ cấu hình và thuật toán UWB của mẫu: A2 làm mốc, cộng/trừ offset vào A1; L = 0,40 m; antenna delay A1 = 16461; mode SHORTDATA_FAST_LOWPOWER; ghép mẫu cùng poll; calibration; Kalman và vote hướng 500 ms. Có thêm kiểm tra A1 sau bù phải dương và trong giới hạn trước khi tính góc.
 
 LiDAR chỉ lấy **F: khoảng cách nhỏ nhất trong vùng trước ±15° giữa các lần in**. Kiểm tra checksum gói X3, đọc UART theo byte có sẵn, không chờ đủ byte bằng vòng lặp chặn. Không tính F trái/phải hoặc điều khiển xe. Phần cụm chủ dùng các điểm trong vùng trước **±80°**, độc lập với F ±15°. Góc UWB cũ và góc LiDAR được xuất riêng.
-
-## Đọc code theo từng hàm
-
-Bản tổ chức lại giữ nguyên thông số, thứ tự xử lý và dòng dữ liệu. Trong một file, các hàm được gom thành nhóm có tiêu đề; đọc `setup()` và `loop()` trước rồi tìm đúng nhóm cần sửa.
-
-| Hàm | Công việc |
-|---|---|
-| `setupLidar()`, `setupUwb()` | Khởi tạo UART, PWM và BU01 |
-| `readCommands()` | Nhận lệnh `c` |
-| `readUart()`, `readLine()`, `getPair()` | Nhận A2, kiểm tra checksum, ghép A1/A2 cùng poll |
-| `updateUwb()` | Chọn calibration hoặc tính góc từ cặp mới |
-| `calibrate()` | Điều phối thu mẫu, tham chiếu tạm và chốt offset |
-| `addCalibrationPair()`, `updateCalibrationReference()`, `finishCalibration()` | Các bước nhỏ của calibration |
-| `calculateAngle()`, `filterAngle()`, `finishVote()` | Tính góc, Kalman và chốt vote UWB |
-| `readLidar()`, `feedLidarByte()` | Nhận và ghép gói X3 không chặn |
-| `processLidarPacket()`, `processLidarPoint()` | Kiểm tra/xử lý gói và điểm, cập nhật F/ô góc |
-| `findClusters()` | Gọi tách cụm điểm và ghép hai cụm chân |
-| `scoreOwnerCluster()`, `chooseOwnerCluster()` | Chấm và chọn một cụm khớp UWB rõ ràng |
-| `finishOwnerScan()` | Điều phối chọn cụm, vote/khóa và lưu vị trí theo mỗi vòng quét |
-| `voteOwner()`, `rememberOwner()` | Tích lũy phiếu và cập nhật vị trí cụm |
-| `checkOwner()` | Kiểm tra mất chủ hoặc số đo cũ |
-| `printCalibrationStatus()`, `printStatus()` | In dữ liệu khi cali và sau cali |
-
-`printRanges()`, `printFront()`, `printOwner()` chỉ phụ trách từng phần A1/A2, F và góc/trạng thái chủ. Không thêm thư viện riêng hoặc tách sang nhiều tab.
 
 ## Đấu dây
 
@@ -46,11 +22,12 @@ Nối GND chung. Giữ dây dữ liệu X3 đang chạy ở bản ghép trước
 
 ## Chạy thử
 
-1. Mở `A1_Lidar.ino`, nạp vào ESP32 A1; mở Serial Monitor 115200 baud.
-2. Giữ Tag đứng yên trên đường trung trực hai Anchor, khoảng 1 m phía trước, cùng mặt phẳng đo như BU01 mẫu. Chờ `CALIB_OK`.
-3. Giữ nguyên vị trí đến khi `CHU=DA_KHOA`. Trong lúc calibration, code vote cụm LiDAR khớp UWB; chỉ khóa sau khi offset đã chốt và đủ **5 vòng quét mới liên tiếp**. Nếu chưa đủ, tiếp tục chờ ở `CHU=CHO_n/5`.
-4. Di chuyển chậm sang hai phía phía trước xe. `goc_lidar` là góc tâm cụm theo LiDAR, cập nhật theo cụm đang theo dõi; `goc` vẫn là góc Kalman/vote UWB. Dương là bên phải, âm là bên trái nếu lắp đúng trục.
-5. `CHU=MAT_CHU` nghĩa là mất cụm hoặc dữ liệu tham chiếu. Bản này không tự gán người khác vào mục tiêu: về giữa khoảng 1 m rồi gửi `c` để calibration/khóa lại. Không có lệnh `s`/`r`.
+1. **Đặt mặt phẳng quét LiDAR nằm ngang và đi qua eo người**, đeo Tag ở eo. Không nghiêng LiDAR đang đặt thấp để chiếu lên eo: mặt phẳng nghiêng làm số đo phụ thuộc hướng/khoảng cách và không khớp mô hình 2D này.
+2. Mở `A1_Lidar.ino`, nạp vào ESP32 A1; mở Serial Monitor 115200 baud.
+3. Giữ Tag đứng yên trên đường trung trực hai Anchor, khoảng 1 m phía trước, cùng mặt phẳng đo như BU01 mẫu. Chờ `CALIB_OK`.
+4. Giữ nguyên vị trí đến khi `CHU=DA_KHOA`. Trong lúc calibration, code vote cụm LiDAR khớp UWB; chỉ khóa sau khi offset đã chốt và đủ **5 vòng quét mới liên tiếp**. Nếu chưa đủ, tiếp tục chờ ở `CHU=CHO_n/5`.
+5. Di chuyển chậm sang hai phía phía trước xe. `goc_lidar` là góc tâm cụm theo LiDAR, cập nhật theo cụm đang theo dõi; `goc` vẫn là góc Kalman/vote UWB. Dương là bên phải, âm là bên trái nếu lắp đúng trục.
+6. `CHU=MAT_CHU` nghĩa là mất cụm hoặc dữ liệu tham chiếu. Bản này không tự gán người khác vào mục tiêu: về giữa khoảng 1 m rồi gửi `c` để calibration/khóa lại. Không có lệnh `s`/`r`.
 
 Vẫn in A1/A2/F khi chưa khóa hoặc đã mất chủ. Trong lúc đang calibration in mỗi giây; sau calibration in mỗi 500 ms. Không cần đứng ngoài 1,3 m mới xem được F.
 
@@ -70,7 +47,7 @@ A1/A2 là khoảng cách đến Tag, F là khoảng cách đến bề mặt ph�
 
 ## Vote cụm và theo dõi
 
-- Chia các điểm hợp lệ thành ô góc 1° trong ±80°, giữ điểm gần nhất mỗi ô. Ghép các ô gần nhau thành cụm: ít nhất 3 điểm, rộng 3–80 cm, khoảng cách điểm kề không quá 20 cm; cho phép khuyết tối đa 2 ô ở giữa. Hai cụm hẹp gần nhau có thể được ghép thành một ứng viên hai chân.
+- Chia các điểm hợp lệ thành ô góc 1° trong ±80°, giữ điểm gần nhất mỗi ô. Ghép các ô gần nhau thành cụm: ít nhất **5 ô góc có điểm**, rộng **15–65 cm**, khoảng cách điểm kề không quá 20 cm; cho phép khuyết tối đa 2 ô ở giữa. Mỗi cụm là một ứng viên vùng eo. **Không ghép hai cụm riêng với nhau**. Ngưỡng 15–65 cm là giá trị khởi đầu để thử, không phải số đo cơ thể chuẩn hoặc kích thước đã được đo trên chủ dự án.
 - Sau ít nhất 10 cặp calibration ổn định, dùng trung bình A2 và A1 đã bù theo trung bình tạm để làm tham chiếu vote; chưa xuất góc chủ hợp lệ trước khi calibration hoàn tất.
 - Mỗi vòng quét mới (mốc CT của X3) chỉ cho 1 phiếu. Cụm phải nằm trong ±15° hướng UWB và có khoảng cách hình học dự kiến đến **cả A1 và A2** lệch không quá 35 cm. Nếu hai ứng viên có điểm số gần nhau, không bỏ phiếu tùy ý. Cụm vote liên tiếp không được nhảy quá 20 cm giữa các vòng. Cần 5 phiếu liên tiếp và calibration hoàn tất để khóa.
 - Khi đã khóa, ưu tiên cụm gần vị trí trước (tối đa 35 cm/vòng), đồng thời kiểm tra UWB rộng hơn: góc lệch tối đa 25°, mỗi range lệch tối đa 50 cm. Chỉ dùng tham chiếu UWB mới trong 200 ms để cập nhật cụm.
@@ -86,15 +63,15 @@ Các thông số cần đúng với cách lắp:
 | `LIDAR_X_M`, `LIDAR_Y_M` | 0, 0 m | Vị trí LiDAR so với trung điểm Anchor: x dương sang phải, y dương ra trước |
 | `TAG_HEIGHT_DIFF_M` | 0 m | Chênh cao Tag–Anchor cho phần đối chiếu cụm/range |
 | `OWNER_VOTES` | 5 | Số vòng quét vote liên tiếp |
+| `WAIST_MIN_WIDTH_M`, `WAIST_MAX_WIDTH_M` | 0,15 / 0,65 m | Giới hạn chiều rộng cụm eo để thử; chỉnh theo dữ liệu thực |
+| `WAIST_MIN_POINTS` | 5 | Số ô góc tối thiểu trong cụm |
 
-Mặc định giả sử LiDAR gần trung điểm hai Anchor, A1 bên trái/A2 bên phải, Tag ở gần cùng cao độ với Anchor. Nếu Tag ở eo và Anchor thấp hơn, đo chênh cao và sửa `TAG_HEIGHT_DIFF_M`. Phần góc UWB gốc vẫn giữ mô hình phẳng của BU01 mẫu; tham số chênh cao dùng cho phần ghép cụm mới. LiDAR phải quét trúng người (thường vùng chân); một mặt phẳng quét hoàn toàn không chạm người thì không tạo được cụm chủ.
+Mặc định giả sử LiDAR gần trung điểm hai Anchor, A1 bên trái/A2 bên phải, Tag ở gần cùng cao độ với Anchor. Nếu Tag ở eo và Anchor thấp hơn, đo chênh cao và sửa `TAG_HEIGHT_DIFF_M`. Phần góc UWB gốc vẫn giữ mô hình phẳng của BU01 mẫu; tham số chênh cao dùng cho phần ghép cụm mới. LiDAR phải quét trúng **eo**; mặt phẳng quét ở chân không thể chuyển thành đo eo chỉ bằng phần mềm. Chiều rộng cụm là bề rộng bề mặt đang nhìn thấy, thay đổi khi xoay người, mặc quần áo, bị tay hoặc vật khác che; cần thử cả hướng chính diện lẫn hướng ngang trước khi chỉnh ngưỡng.
 
 ## Code BU01 mẫu và kiểm tra
 
 Bản UWB mẫu riêng: [`../BU01_mau/BU01_mau.ino`](../BU01_mau/BU01_mau.ino). Bản Markdown gửi gốc lưu tại `docs/source/BU01_mau_original.md` để đối chiếu. Bản riêng chỉ chuẩn hóa escape/khoảng trắng, giữ thuật toán và cấu hình người dùng.
 
-Đã biên dịch/kiểm tra logic bằng C++ trên máy tính với Arduino/DW1000 giả lập và AddressSanitizer/UBSan: calibration hai dấu offset, ghép UART cùng poll, gói X3 phân mảnh/checksum, bỏ điểm bên hông, lấy min F, số đo hết hạn và hiển thị F độc lập với UWB; thêm kiểm tra vote thật trong calibration, không khóa sớm, theo dõi đổi góc, ghép hai chân, ứng viên mơ hồ, sai góc/range, dữ liệu cũ, mất chủ và `c` khóa lại. **Chưa biên dịch cho ESP32 hoặc thử BU01/X3 thực tế**. Chưa xác định nguyên nhân tỉ lệ gói bị từ chối cao ở log bản trước.
+Đã biên dịch/kiểm tra logic bằng C++ trên máy tính với Arduino/DW1000 giả lập và AddressSanitizer/UBSan: calibration hai dấu offset, ghép UART cùng poll, gói X3 phân mảnh/checksum, bỏ điểm bên hông, lấy min F, số đo hết hạn và hiển thị F độc lập với UWB; thêm kiểm tra vote thật trong calibration, không khóa sớm, theo dõi đổi góc, cụm eo liên tục, loại cụm hẹp/rộng, không ghép hai ứng viên eo, ứng viên mơ hồ, sai góc/range, dữ liệu cũ, mất chủ và `c` khóa lại. **Chưa biên dịch cho ESP32 hoặc thử BU01/X3 thực tế**. Chưa xác định nguyên nhân tỉ lệ gói bị từ chối cao ở log bản trước.
 
 Giao thức tham chiếu: [YDLIDAR SDK Communication Protocol](https://github.com/YDLIDAR/YDLidar-SDK/blob/master/doc/YDLidar-SDK-Communication-Protocol.md).
-
-Lần chia lại hàm: các tình huống kiểm tra cũ đều qua ASan/UBSan; toàn bộ dòng Serial thu được trong cùng các tình huống trước và sau giống nhau (2.737 byte). Đây là so sánh giả lập, chưa phải thử ESP32.

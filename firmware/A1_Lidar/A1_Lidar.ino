@@ -1,4 +1,5 @@
-/* BU01 mau + LiDAR X3: vote cum chu khi cali, theo doi va hien thi them goc_lidar.
+/* BU01 mau + LiDAR X3: vote cum eo khi cali, theo doi va hien thi goc_lidar.
+   Dat mat phang quet LiDAR ngang eo, Tag deo o eo. Khong ghep hai chan.
    Giu Tag yen o giua, phia truoc khoang 1 m khi bat nguon de cali.
    A1 da cong offset; A2 la moc. F la diem gan nhat trong vung truoc +/-15 do.
    A2 UART2 RX16/TX17; LiDAR UART1 RX32, PWM25. Serial 115200.
@@ -12,7 +13,6 @@
 #include <string.h>
 #include "DW1000.h"
 #include "DW1000Ranging.h"
-// CAU HINH PHAN CUNG VA THONG SO
 char ADDRESS[] = "86:17:5B:D5:A9:9A:E2:9C";
 const uint16_t TAG_SHORT = 0x007D, ANTENNA_DELAY = 16461;
 const uint8_t SCK_PIN = 18, MISO_PIN = 19, MOSI_PIN = 23, CS_PIN = 4;
@@ -30,20 +30,20 @@ HardwareSerial Uart(2);
 HardwareSerial LidarSerial(1);
 const uint8_t LIDAR_RX = 32, LIDAR_TX_UNUSED = 33, LIDAR_MOTOR = 25;
 const float LIDAR_ZERO_DEG = 0; // Sua neu dau LiDAR khong huong 0 do ve phia truoc.
-const float CLUSTER_GAP_M = 0.20f, LOCK_ANGLE_DEG = 15, LOCK_RANGE_M = 0.35f;
-const float TRACK_STEP_M = 0.35f;
-const uint8_t OWNER_VOTES = 5;
-const float LIDAR_X_M = 0, LIDAR_Y_M = 0; // So voi trung diem hai Anchor.
-const float TAG_HEIGHT_DIFF_M = 0; // Chieu cao Tag tru chieu cao Anchor.
-
-// DU LIEU GOI LIDAR VA KHOANG CACH F
 float frontDistance = INFINITY;
 uint32_t frontTime = 0, packetTime = 0;
 uint8_t packet[520];
 uint16_t packetSize = 0, packetNeed = 10;
 
-// DU LIEU NHAN DIEN CHU
 // Cum LiDAR chi tim trong vung truoc +/-80 do; F van la +/-15 do.
+const float CLUSTER_GAP_M = 0.20f, LOCK_ANGLE_DEG = 15, LOCK_RANGE_M = 0.35f;
+const float TRACK_STEP_M = 0.35f;
+const uint8_t OWNER_VOTES = 5;
+// Nguong khoi dau de THU NGHIEM, can chinh theo cum eo do thuc te.
+const float WAIST_MIN_WIDTH_M = 0.15f, WAIST_MAX_WIDTH_M = 0.65f;
+const uint8_t WAIST_MIN_POINTS = 5;
+const float LIDAR_X_M = 0, LIDAR_Y_M = 0; // So voi trung diem hai Anchor.
+const float TAG_HEIGHT_DIFF_M = 0; // Chieu cao Tag tru chieu cao Anchor.
 struct Cluster { float x = 0, y = 0, width = 0; int points = 0; };
 struct Owner {
     bool locked = false, lost = false;
@@ -58,7 +58,6 @@ bool scanStarted = false, referenceValid = false;
 uint32_t scanStart = 0, referenceTime = 0;
 float referenceA1 = 0, referenceA2 = 0, referenceAngle = 0;
 
-// DU LIEU UWB: mau A1/A2, calibration va vote huong.
 struct Sample {
     float range = 0;
     uint64_t poll = 0;
@@ -91,42 +90,13 @@ int lineLength = -1; // -1: chua gap dau '$'.
 uint32_t lineStart = 0, lastUart = 0;
 bool discardUart = true;
 
-// ==================== CHUONG TRINH CHINH ====================
-
-// Chi khoi tao phan cung; cac buoc xu ly nam trong loop().
 void setup() {
     Serial.setTxBufferSize(512);
     Serial.begin(115200);
-    setupLidar();
-    setupUwb();
-    lastUart = voteStart = lastStatus = millis();
-    Serial.println("A1 READY | GIU TAG YEN O GIUA, PHIA TRUOC 1 m; CHO CHU=DA_KHOA.");
-}
-
-// Doc theo thu tu nay: UWB -> A2 -> LiDAR -> cali/goc -> chu -> hien thi.
-void loop() {
-    DW1000Ranging.loop();
-    uint32_t now = millis();
-    handleTagChange();
-    readUart(now);
-    readLidar(now);
-    now = millis(); // LiDAR co the goi callback UWB, can lay lai moc thoi gian.
-    readCommands(now);
-    updateUwb(now);
-    checkOwner(now);
-    finishVote(now);
-}
-
-// ==================== KHOI TAO VA LENH SERIAL ====================
-
-void setupLidar() {
     LidarSerial.setRxBufferSize(1024);
     LidarSerial.begin(115200, SERIAL_8N1, LIDAR_RX, LIDAR_TX_UNUSED);
     if (ledcAttach(LIDAR_MOTOR, 10000, 8)) ledcWrite(LIDAR_MOTOR, 200);
     else Serial.println("LOI PWM LIDAR");
-}
-
-void setupUwb() {
     Uart.setRxBufferSize(256);
     Uart.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
     delay(1000);
@@ -137,28 +107,33 @@ void setupUwb() {
     DW1000Ranging.attachBlinkDevice(connectionChanged);
     DW1000Ranging.attachInactiveDevice(connectionChanged);
     DW1000Ranging.startAsAnchor(ADDRESS, DW1000.MODE_SHORTDATA_FAST_LOWPOWER, false);
+    lastUart = voteStart = lastStatus = millis();
+    Serial.println("A1 READY | GIU TAG YEN O GIUA, PHIA TRUOC 1 m; CHO CHU=DA_KHOA.");
 }
 
-// Lenh c: xoa ket qua cu de cali va vote khoa chu lai.
-void readCommands(uint32_t now) {
-    if (!Serial.available() || Serial.read() != 'c') return;
-    calibrated = false;
-    offset = 0;
-    resetMeasurements();
-    lastStatus = now;
-    Serial.println("CALIB_LAI: GIU TAG YEN O GIUA 1 m; CHO CHU=DA_KHOA");
-}
-
-// ==================== NHAN VA GHEP DU LIEU UWB ====================
-
-void handleTagChange() {
-    if (!tagChanged) return;
-    resetMeasurements();
-    if (owner.locked) {
-        owner.locked = false;
-        owner.lost = true;
+void loop() {
+    DW1000Ranging.loop();
+    uint32_t now = millis();
+    if (tagChanged) {
+        resetMeasurements();
+        if (owner.locked) { owner.locked = false; owner.lost = true; }
+        tagChanged = false;
     }
-    tagChanged = false;
+    readUart(now);
+    readLidar(now);
+    now = millis(); // readLidar co the goi callback UWB; lay lai moc thoi gian.
+    if (Serial.available() && Serial.read() == 'c') {
+        calibrated = false; offset = 0;
+        resetMeasurements(); lastStatus = now;
+        Serial.println("CALIB_LAI: GIU TAG YEN O GIUA 1 m; CHO CHU=DA_KHOA");
+    }
+    float d1 = 0, d2 = 0;
+    const bool gotPair = getPair(d1, d2, now);
+    if (calibrated && havePair && uint32_t(now - lastPair) > LOST_MS) resetMeasurements();
+    if (!calibrated) calibrate(d1, d2, gotPair, now);
+    else if (gotPair) calculateAngle(d1 + offset, d2, now);
+    checkOwner(now);
+    finishVote(now);
 }
 
 void newRange() {
@@ -172,6 +147,11 @@ void connectionChanged(DW1000Device *device) {
     if (device && device->getShortAddress() == TAG_SHORT) tagChanged = true;
 }
 
+void clearVotes() {
+    for (int i = 0; i < 7; ++i) votes[i] = {};
+    voteOrder = 0;
+}
+
 void resetMeasurements() {
     a1.fresh = a2.fresh = false;
     usedPoll = NO_POLL;
@@ -179,9 +159,10 @@ void resetMeasurements() {
     lastDirection = -1;
     clearVotes();
     referenceValid = false;
-    if (!calibrated) resetCalibration(); // Da cali thi giu offset khi mat Tag.
+    if (!calibrated) { cal = {}; owner = {}; } // Da cali thi giu offset khi mat Tag.
 }
 
+// UART A2: $A2,poll,range_mm,age_ms,valid*HH\n. HH la checksum XOR.
 void readUart(uint32_t now) {
     if (uint32_t(now - lastUart) > MAX_AGE || Uart.available() > 128) {
         discardUart = true;
@@ -254,73 +235,21 @@ bool getPair(float &d1, float &d2, uint32_t now) {
     return true;
 }
 
-void updateUwb(uint32_t now) {
-    float d1 = 0, d2 = 0;
-    bool gotPair = getPair(d1, d2, now);
-    if (calibrated && havePair && uint32_t(now - lastPair) > LOST_MS)
-        resetMeasurements();
-    if (!calibrated) calibrate(d1, d2, gotPair, now);
-    else if (gotPair) calculateAngle(d1 + offset, d2, now);
-}
-
-// ==================== HIEU CHUAN A1 THEO MOC A2 ====================
-
-// Xoa mau calibration va phieu chu khi can thu lai.
-void resetCalibration() {
-    cal = {};
-    owner = {};
-    referenceValid = false;
-}
-
-void addCalibrationPair(float d1, float d2, uint32_t now) {
-    if (cal.count == 0) cal.collect = now;
-    ++cal.count;
-    const float ranges[2] = {d1, d2};
-    for (int i = 0; i < 2; ++i) {
-        float delta = ranges[i] - cal.mean[i];
-        cal.mean[i] += delta / cal.count;
-        cal.m2[i] += delta * (ranges[i] - cal.mean[i]);
-    }
-}
-
-// Khi offset chua chot, chi dung offset tam de vote cum LiDAR.
-void updateCalibrationReference(uint32_t now) {
-    if (cal.count >= 10 && cal.m2[0] / (cal.count - 1) <= MAX_STD * MAX_STD &&
-        cal.m2[1] / (cal.count - 1) <= MAX_STD * MAX_STD) {
-        float offsetTam = cal.mean[1] - cal.mean[0];
-        setUwbReference(cal.mean[0] + offsetTam, cal.mean[1], now);
-    } else {
-        referenceValid = false;
-        owner.votes = 0;
-    }
-}
-
-void finishCalibration(uint32_t now) {
-    if (cal.count < MIN_PAIRS || uint32_t(now - cal.collect) < COLLECT_MS) return;
-    float sd1 = sqrtf(fmaxf(0, cal.m2[0] / (cal.count - 1)));
-    float sd2 = sqrtf(fmaxf(0, cal.m2[1] / (cal.count - 1)));
-    if (sd1 > MAX_STD || sd2 > MAX_STD || (L > 0 && cal.mean[0] <= L * 0.5f)) {
-        Serial.println("CALIB_CHUA_ON_DINH: GIU TAG YEN, KIEM TRA RANGE; TU LAY LAI MAU.");
-        resetCalibration();
-        return;
-    }
-    offset = cal.mean[1] - cal.mean[0]; // A2 lam moc, chi bu vao A1.
-    calibrated = true;
-    resetMeasurements();
-    setUwbReference(cal.mean[0] + offset, cal.mean[1], now);
-    voteStart = now;
-    Serial.printf("CALIB_OK | OFFSET_A1_M=%.4f m\n", offset);
-}
-
-// Calibration: cho yen 2 s -> thu cap mau -> tham chieu vote -> chot offset.
+// Calibration chi dung RAW: cho 2 s, thu >=30 cap trong >=3 s, do lech chuan <=10 cm.
 void calibrate(float d1, float d2, bool gotPair, uint32_t now) {
-    if (cal.started && (uint32_t(now - cal.last) > GAP_MS ||
-                        uint32_t(now - cal.start) >= CAL_TIMEOUT)) {
-        resetCalibration();
+    if (cal.started && (uint32_t(now - cal.last) > GAP_MS || uint32_t(now - cal.start) >= CAL_TIMEOUT)) {
+        cal = {}; owner = {}; referenceValid = false;
         a1.fresh = a2.fresh = false;
         Serial.println("CALIB_THU_LAI: MAT CAP MAU HOAC QUA THOI GIAN.");
     }
-    printCalibrationStatus(now);
+    if (uint32_t(now - lastStatus) >= 1000) {
+        lastStatus = now;
+        Serial.printf("CALIB: GIU TAG YEN | so cap=%lu | ", (unsigned long)cal.count);
+        printRanges(now);
+        printFront(now);
+        printOwner(now);
+        Serial.println();
+    }
     if (!gotPair) return;
     if (!cal.started) {
         cal.started = true;
@@ -328,12 +257,35 @@ void calibrate(float d1, float d2, bool gotPair, uint32_t now) {
     }
     cal.last = now;
     if (uint32_t(now - cal.start) < SETTLE_MS) return;
-    addCalibrationPair(d1, d2, now);
-    updateCalibrationReference(now);
-    finishCalibration(now);
+    if (cal.count == 0) cal.collect = now;
+    ++cal.count;
+    const float ranges[2] = {d1, d2};
+    for (int i = 0; i < 2; ++i) { // Cung mot cach tinh cho d1 va d2.
+        const float delta = ranges[i] - cal.mean[i];
+        cal.mean[i] += delta / cal.count;
+        cal.m2[i] += delta * (ranges[i] - cal.mean[i]);
+    }
+    // Trong luc thu cali: dung trung binh hai Anchor de vote cum, chua khoa chu.
+    if (cal.count >= 10 && cal.m2[0]/(cal.count-1) <= MAX_STD*MAX_STD &&
+        cal.m2[1]/(cal.count-1) <= MAX_STD*MAX_STD) {
+        float offsetTam = cal.mean[1]-cal.mean[0];
+        setUwbReference(cal.mean[0]+offsetTam, cal.mean[1], now);
+    } else { referenceValid = false; owner.votes = 0; }
+    if (cal.count < MIN_PAIRS || uint32_t(now - cal.collect) < COLLECT_MS) return;
+    const float sd1 = sqrtf(fmaxf(0, cal.m2[0] / (cal.count - 1)));
+    const float sd2 = sqrtf(fmaxf(0, cal.m2[1] / (cal.count - 1)));
+    if (sd1 > MAX_STD || sd2 > MAX_STD || (L > 0 && cal.mean[0] <= L * 0.5f)) {
+        Serial.println("CALIB_CHUA_ON_DINH: GIU TAG YEN, KIEM TRA RANGE; TU LAY LAI MAU.");
+        cal = {}; owner = {}; referenceValid = false;
+        return;
+    }
+    offset = cal.mean[1] - cal.mean[0];
+    calibrated = true;
+    resetMeasurements();
+    setUwbReference(cal.mean[0]+offset, cal.mean[1], now);
+    voteStart = now;
+    Serial.printf("CALIB_OK | OFFSET_A1_M=%.4f m\n", offset);
 }
-
-// ==================== GOC UWB, KALMAN VA VOTE HUONG ====================
 
 void calculateAngle(float d1, float d2, uint32_t now) {
     if (L <= 0 || !isfinite(d1) || !isfinite(d2) ||
@@ -372,12 +324,10 @@ void filterAngle(float measured, float d1, float d2, uint32_t now) {
     v = {v.count + 1, ++voteOrder, d1, d2, angle};
 }
 
-void clearVotes() {
-    for (int i = 0; i < 7; ++i) votes[i] = {};
-    voteOrder = 0;
-}
-
-int chooseDirection() {
+void finishVote(uint32_t now) {
+    if (!calibrated || uint32_t(now - voteStart) < VOTE_MS) return;
+    const uint32_t elapsed = now - voteStart;
+    if (elapsed >= 2 * VOTE_MS) clearVotes();
     int winner = -1;
     for (int i = 0; i < 7; ++i) {
         if (!votes[i].count) continue;
@@ -386,268 +336,19 @@ int chooseDirection() {
     }
     if (winner >= 0 && lastDirection >= 0 && votes[lastDirection].count == votes[winner].count)
         winner = lastDirection; // Hoa phieu: uu tien huong da xuat, sau do huong moi nhat.
-    return winner;
-}
-
-// Chot vote UWB moi 500 ms; viec in duoc tach rieng o printStatus().
-void finishVote(uint32_t now) {
-    if (!calibrated || uint32_t(now - voteStart) < VOTE_MS) return;
-    uint32_t elapsed = now - voteStart;
-    if (elapsed >= 2 * VOTE_MS) clearVotes();
-    int winner = chooseDirection();
-    printStatus(now, winner);
-    lastDirection = winner;
-    clearVotes();
-    voteStart += (elapsed / VOTE_MS) * VOTE_MS;
-}
-
-void setUwbReference(float d1, float d2, uint32_t now) {
-    float x = (d1*d1 - d2*d2) / (2*L);
-    float y2 = d1*d1 - (x + L/2) * (x + L/2) - TAG_HEIGHT_DIFF_M * TAG_HEIGHT_DIFF_M;
-    referenceValid = isfinite(y2) && y2 > 0;
-    if (!referenceValid) return;
-    referenceA1 = d1;
-    referenceA2 = d2;
-    referenceAngle = atan2f(x, sqrtf(y2)) * 180.0f / PI;
-    referenceTime = now;
-}
-
-// ==================== DOC LIDAR X3 ====================
-
-void readLidar(uint32_t now) {
-    if (packetSize && uint32_t(now - packetTime) > 60) {
-        packetSize = 0;
-        scanStarted = false;
-        owner.votes = 0;
-    }
-    for (int i = 0; i < 128 && LidarSerial.available(); ++i)
-        feedLidarByte(uint8_t(LidarSerial.read()), now);
-}
-
-// Ghep khung AA55 tung byte; khong doi du byte bang vong while chan.
-void feedLidarByte(uint8_t b, uint32_t now) {
-    if (!packetSize) {
-        if (b == 0xAA) { packet[0] = b; packetSize = 1; packetTime = now; }
-        return;
-    }
-    if (packetSize == 1 && b != 0x55) {
-        packetSize = b == 0xAA ? 1 : 0;
-        packetTime = now;
-        return;
-    }
-    packet[packetSize++] = b;
-    if (packetSize == 4) {
-        if (!packet[3]) { packetSize = 0; return; }
-        packetNeed = 10 + 2 * packet[3];
-    }
-    if (packetSize < 10 || packetSize != packetNeed) return;
-    packetSize = 0;
-    processLidarPacket(now);
-}
-
-uint16_t lidarWord(int i) {
-    return uint16_t(packet[i]) | (uint16_t(packet[i + 1]) << 8);
-}
-
-bool checkLidarPacket() {
-    uint16_t check = 0x55AA ^ lidarWord(2) ^ lidarWord(4) ^ lidarWord(6);
-    for (int i = 10; i < packetNeed; i += 2) check ^= lidarWord(i);
-    return check == lidarWord(8) && (packet[4] & 1) && (packet[6] & 1);
-}
-
-void beginLidarScan(uint32_t now) {
-    if (scanStarted) finishOwnerScan(now);
-    for (float &d : scanRange) d = INFINITY;
-    scanStart = now;
-    scanStarted = true;
-}
-
-// Goi nay da du byte: kiem checksum -> noi suy goc -> xu ly tung diem.
-void processLidarPacket(uint32_t now) {
-    if (!checkLidarPacket()) return;
-    float start = (lidarWord(4) >> 1) / 64.0f;
-    float end = (lidarWord(6) >> 1) / 64.0f;
-    if (start >= 360 || end >= 360) return;
-    if (packet[2] & 1) beginLidarScan(now);
-    float span = end - start;
-    if (span < 0) span += 360;
-    int n = packet[3];
-    for (int i = 0; i < n; ++i) {
-        float mm = lidarWord(10 + 2 * i) / 4.0f;
-        float a = start + (n > 1 ? span * i / (n - 1) : 0);
-        processLidarPoint(a, mm, now);
-    }
-    DW1000Ranging.loop();
-}
-
-// Hieu chinh goc X3, luu o cum va cap nhat khoang cach F.
-void processLidarPoint(float a, float mm, uint32_t now) {
-    if (mm < 120 || mm > 8000) return;
-    a += atanf(21.8f * (155.3f - mm) / (155.3f * mm)) * 180.0f / PI;
-    a += LIDAR_ZERO_DEG;
-    while (a >= 180) a -= 360;
-    while (a < -180) a += 360;
-    if (scanStarted && fabsf(a) <= 80) {
-        int bin = int(lroundf(a)) + 80;
-        scanRange[bin] = fminf(scanRange[bin], mm / 1000.0f);
-    }
-    if (fabsf(a) <= 15) {
-        frontDistance = fminf(frontDistance, mm / 1000.0f);
-        frontTime = now;
-    }
-}
-
-// ==================== TIM CUM VA GHEP HAI CHAN ====================
-
-void findClusters() {
-    splitClusters();
-    mergeLegClusters();
-}
-
-void splitClusters() {
-    clusterCount = 0;
-    float sumX = 0, sumY = 0;
-    float firstX = 0, firstY = 0, lastX = 0, lastY = 0;
-    int points = 0, lastBin = -10;
-    for (int i = 0; i <= 161; ++i) {
-        bool hasPoint = i < 161 && isfinite(scanRange[i]);
-        float a = (i - 80) * PI / 180.0f;
-        float x = hasPoint ? scanRange[i] * sinf(a) + LIDAR_X_M : 0;
-        float y = hasPoint ? scanRange[i] * cosf(a) + LIDAR_Y_M : 0;
-        // Diem moi qua xa hoac het vong: chot cum dang gom.
-        if (points && (i == 161 || (hasPoint &&
-            (i - lastBin > 3 || hypotf(x - lastX, y - lastY) > CLUSTER_GAP_M)))) {
-            float width = hypotf(lastX - firstX, lastY - firstY);
-            if (points >= 3 && width >= 0.03f && width <= 0.80f) {
-                if (clusterCount == 24) { clusterCount = 0; return; }
-                clusters[clusterCount++] = {sumX / points, sumY / points, width, points};
-            }
-            sumX = sumY = 0;
-            points = 0;
-        }
-        if (!hasPoint) continue;
-        if (!points) { firstX = x; firstY = y; }
-        sumX += x;
-        sumY += y;
-        ++points;
-        lastX = x;
-        lastY = y;
-        lastBin = i;
-    }
-}
-
-void mergeLegClusters() {
-    for (int i = 0; i + 1 < clusterCount; ++i) {
-        Cluster &a = clusters[i], &b = clusters[i + 1];
-        if (a.width > 0.25f || b.width > 0.25f || hypotf(a.x - b.x, a.y - b.y) > 0.50f)
-            continue;
-        // Hai cum hep gan nhau: dung trung diem lam tam chu.
-        int points = a.points + b.points;
-        a = {(a.x + b.x) / 2, (a.y + b.y) / 2, a.width + b.width, points};
-        for (int j = i + 1; j + 1 < clusterCount; ++j) clusters[j] = clusters[j + 1];
-        --clusterCount;
-    }
-}
-
-// ==================== VOTE KHOA CHU VA THEO DOI ====================
-
-// Xu ly mot vong quet: tim cum -> chon cum -> vote/khoa -> luu vi tri.
-void finishOwnerScan(uint32_t now) {
-    checkOwner(now);
-    uint32_t duration = now - scanStart;
-    if (duration < 60 || duration > LOST_MS || owner.lost || !referenceValid ||
-        uint32_t(now - referenceTime) > 200) {
-        owner.votes = 0;
-        return;
-    }
-    findClusters();
-    int selected = chooseOwnerCluster();
-    if (selected < 0) { owner.votes = 0; return; }
-    if (!owner.locked) voteOwner(selected, now);
-    rememberOwner(selected, now);
-}
-
-// Diem nho la tot: khop hai range, goc UWB va vi tri cum truoc.
-float scoreOwnerCluster(int index) {
-    Cluster &p = clusters[index];
-    float range = hypotf(p.x - LIDAR_X_M, p.y - LIDAR_Y_M);
-    if (p.y <= 0 || range < 0.4f || range > 4.0f) return INFINITY;
-    float h2 = TAG_HEIGHT_DIFF_M * TAG_HEIGHT_DIFF_M;
-    float errorA1 = fabsf(sqrtf((p.x + L/2) * (p.x + L/2) + p.y*p.y + h2) - referenceA1);
-    float errorA2 = fabsf(sqrtf((p.x - L/2) * (p.x - L/2) + p.y*p.y + h2) - referenceA2);
-    float errorAngle = fabsf(atan2f(p.x, p.y) * 180.0f / PI - referenceAngle);
-    float rangeGate = owner.locked ? 0.50f : LOCK_RANGE_M;
-    float angleGate = owner.locked ? 25 : LOCK_ANGLE_DEG;
-    if (errorA1 > rangeGate || errorA2 > rangeGate || errorAngle > angleGate)
-        return INFINITY;
-    float move = hypotf(p.x - owner.x, p.y - owner.y);
-    if (owner.locked && move > TRACK_STEP_M) return INFINITY;
-    float score = (errorA1 + errorA2) / (2 * rangeGate) + errorAngle / LOCK_ANGLE_DEG;
-    if (owner.locked) score += move / TRACK_STEP_M;
-    return score;
-}
-
-int chooseOwnerCluster() {
-    int best = -1;
-    float bestScore = INFINITY, secondScore = INFINITY;
-    for (int i = 0; i < clusterCount; ++i) {
-        float score = scoreOwnerCluster(i);
-        if (score < bestScore) {
-            secondScore = bestScore;
-            bestScore = score;
-            best = i;
-        } else if (score < secondScore) secondScore = score;
-    }
-    if (best < 0 || secondScore - bestScore < 0.25f) return -1;
-    return best;
-}
-
-// Chi vote khi chua khoa. Khi da khoa, giu theo cum gan vi tri truoc.
-void voteOwner(int selected, uint32_t now) {
-    Cluster &p = clusters[selected];
-    if (!owner.votes || uint32_t(now - owner.time) > LOST_MS ||
-        hypotf(p.x - owner.x, p.y - owner.y) > 0.20f) owner.votes = 0;
-    if (owner.votes < OWNER_VOTES) ++owner.votes;
-    if (calibrated && owner.votes >= OWNER_VOTES) owner.locked = true;
-}
-
-void rememberOwner(int selected, uint32_t now) {
-    owner.x = clusters[selected].x;
-    owner.y = clusters[selected].y;
-    owner.time = now;
-}
-
-void checkOwner(uint32_t now) {
-    if (owner.locked && (uint32_t(now - owner.time) > LOST_MS || !referenceValid ||
-                         uint32_t(now - referenceTime) > LOST_MS)) {
-        owner.locked = false;
-        owner.lost = true;
-        owner.votes = 0;
-    }
-    if (!owner.locked && uint32_t(now - owner.time) > LOST_MS) owner.votes = 0;
-}
-
-// ==================== HIEN THI A1, A2, GOC UWB, F VA GOC LIDAR ====================
-
-void printCalibrationStatus(uint32_t now) {
-    if (uint32_t(now - lastStatus) < 1000) return;
-    lastStatus = now;
-    Serial.printf("CALIB: GIU TAG YEN | so cap=%lu | ", (unsigned long)cal.count);
-    printRanges(now);
-    printFront(now);
-    printOwner(now);
-    Serial.println();
-}
-
-void printStatus(uint32_t now, int winner) {
     printRanges(now);
     if (winner < 0) Serial.print(" | goc=-- | UWB=0");
     else Serial.printf(" | goc=%.1f do | %s | UWB=1", votes[winner].angle, NAMES[winner]);
     printFront(now);
     printOwner(now);
     Serial.println();
+    lastDirection = winner;
+    clearVotes();
+    voteStart += (elapsed / VOTE_MS) * VOTE_MS;
 }
 
+// Hien thi mau moi nhat tung Anchor; mau qua 500 ms duoc ghi --.
+// Hai range hien thi khong nhat thiet cung poll; tinh goc van chi dung cap cung poll.
 void printRanges(uint32_t now) {
     bool ok1 = isfinite(a1.range) && a1.range > 0 && a1.range <= MAX_RANGE &&
                uint32_t(now - a1.time) <= LOST_MS;
@@ -666,15 +367,155 @@ void printFront(uint32_t now) {
     frontDistance = INFINITY; // Lay min moi cho lan hien thi tiep theo.
 }
 
+// Cap A1/A2 nay da duoc ghep cung poll, khong lay hai cot log ghep lai.
+void setUwbReference(float d1, float d2, uint32_t now) {
+    float x = (d1*d1 - d2*d2)/(2*L);
+    float y2 = d1*d1 - (x+L/2)*(x+L/2) - TAG_HEIGHT_DIFF_M*TAG_HEIGHT_DIFF_M;
+    referenceValid = isfinite(y2) && y2 > 0;
+    if (!referenceValid) return;
+    referenceA1 = d1; referenceA2 = d2;
+    referenceAngle = atan2f(x, sqrtf(y2))*180.0f/PI;
+    referenceTime = now;
+}
+
+void checkOwner(uint32_t now) {
+    if (owner.locked && (uint32_t(now-owner.time) > LOST_MS || !referenceValid ||
+                         uint32_t(now-referenceTime) > LOST_MS)) {
+        owner.locked = false; owner.lost = true; owner.votes = 0;
+    }
+    if (!owner.locked && uint32_t(now-owner.time) > LOST_MS) owner.votes = 0;
+}
+
 void printOwner(uint32_t now) {
     checkOwner(now);
     if (owner.locked) {
-        float a = atan2f(owner.x - LIDAR_X_M, owner.y - LIDAR_Y_M) * 180.0f / PI;
+        float a = atan2f(owner.x-LIDAR_X_M, owner.y-LIDAR_Y_M)*180.0f/PI;
         Serial.printf(" | goc_lidar=%.1f do | CHU=DA_KHOA", a);
-    } else if (owner.lost) {
-        Serial.print(" | goc_lidar=-- | CHU=MAT_CHU");
-    } else {
-        Serial.printf(" | goc_lidar=-- | CHU=%s_%u/%u",
-                      calibrated ? "CHO" : "CALIB", owner.votes, OWNER_VOTES);
+    } else if (owner.lost) Serial.print(" | goc_lidar=-- | CHU=MAT_CHU");
+    else Serial.printf(" | goc_lidar=-- | CHU=%s_%u/%u",
+                       calibrated ? "CHO" : "CALIB", owner.votes, OWNER_VOTES);
+}
+
+void findClusters() {
+    clusterCount = 0;
+    float sx=0, sy=0, firstX=0, firstY=0, lastX=0, lastY=0;
+    int points=0, lastBin=-10;
+    for (int i=0; i<=161; ++i) {
+        bool point = i<161 && isfinite(scanRange[i]);
+        float a=(i-80)*PI/180.0f;
+        float x=point ? scanRange[i]*sinf(a)+LIDAR_X_M : 0;
+        float y=point ? scanRange[i]*cosf(a)+LIDAR_Y_M : 0;
+        if (points && (i==161 || (point &&
+            (i-lastBin>3 || hypotf(x-lastX,y-lastY)>CLUSTER_GAP_M)))) {
+            float width=hypotf(lastX-firstX,lastY-firstY);
+            if (points>=WAIST_MIN_POINTS &&
+                width>=WAIST_MIN_WIDTH_M && width<=WAIST_MAX_WIDTH_M) {
+                if (clusterCount==24) { clusterCount=0; return; } // Qua nhieu cum: bo vong nay.
+                clusters[clusterCount++]={sx/points,sy/points,width,points};
+            }
+            sx=sy=0; points=0;
+        }
+        if (!point) continue;
+        if (!points) { firstX=x; firstY=y; }
+        sx+=x; sy+=y; ++points; lastX=x; lastY=y; lastBin=i;
+    }
+    // Mot cum lien tuc ung voi vung eo; khong ghep hai cum rieng thanh chu.
+}
+
+// Moi vong quet moi chi duoc mot phieu; khong dem so lan in Serial.
+void finishOwnerScan(uint32_t now) {
+    checkOwner(now);
+    uint32_t duration=now-scanStart;
+    if (duration<60 || duration>LOST_MS || owner.lost || !referenceValid ||
+        uint32_t(now-referenceTime)>200) { owner.votes=0; return; }
+    findClusters();
+    int best=-1; float scoreBest=INFINITY, second=INFINITY;
+    for (int i=0; i<clusterCount; ++i) {
+        Cluster &p=clusters[i];
+        float r=hypotf(p.x-LIDAR_X_M,p.y-LIDAR_Y_M);
+        if (p.y<=0 || r<0.4f || r>4.0f) continue;
+        float h2=TAG_HEIGHT_DIFF_M*TAG_HEIGHT_DIFF_M;
+        float e1=fabsf(sqrtf((p.x+L/2)*(p.x+L/2)+p.y*p.y+h2)-referenceA1);
+        float e2=fabsf(sqrtf((p.x-L/2)*(p.x-L/2)+p.y*p.y+h2)-referenceA2);
+        float da=fabsf(atan2f(p.x,p.y)*180.0f/PI-referenceAngle);
+        float gate=owner.locked ? 0.50f : LOCK_RANGE_M;
+        if (e1>gate || e2>gate || da>(owner.locked ? 25 : LOCK_ANGLE_DEG)) continue;
+        float move=hypotf(p.x-owner.x,p.y-owner.y);
+        if (owner.locked && move>TRACK_STEP_M) continue;
+        float score=(e1+e2)/(2*gate)+da/LOCK_ANGLE_DEG;
+        if (owner.locked) score+=move/TRACK_STEP_M;
+        if (score<scoreBest) { second=scoreBest; scoreBest=score; best=i; }
+        else if (score<second) second=score;
+    }
+    if (best<0 || second-scoreBest<0.25f) { owner.votes=0; return; }
+    Cluster &p=clusters[best];
+    if (!owner.locked) {
+        if (!owner.votes || uint32_t(now-owner.time)>LOST_MS ||
+            hypotf(p.x-owner.x,p.y-owner.y)>0.20f) owner.votes=0;
+        if (owner.votes<OWNER_VOTES) ++owner.votes;
+        if (calibrated && owner.votes>=OWNER_VOTES) owner.locked=true;
+    }
+    owner.x=p.x; owner.y=p.y; owner.time=now;
+}
+
+uint16_t lidarWord(int i) {
+    return uint16_t(packet[i]) | (uint16_t(packet[i + 1]) << 8);
+}
+
+// X3: AA55, CT, so mau, FSA, LSA, checksum, moi khoang cach 2 byte.
+// Doc tung byte co san, khong dung while cho byte lam dung UWB.
+void readLidar(uint32_t now) {
+    if (packetSize && uint32_t(now - packetTime) > 60) {
+        packetSize = 0; scanStarted = false; owner.votes = 0;
+    }
+    for (int k = 0; k < 128 && LidarSerial.available(); ++k) {
+        uint8_t b = uint8_t(LidarSerial.read());
+        if (!packetSize) {
+            if (b == 0xAA) { packet[0] = b; packetSize = 1; packetTime = now; }
+            continue;
+        }
+        if (packetSize == 1 && b != 0x55) {
+            packetSize = b == 0xAA ? 1 : 0; packetTime = now;
+            continue;
+        }
+        packet[packetSize++] = b;
+        if (packetSize == 4) {
+            if (!packet[3]) { packetSize = 0; continue; }
+            packetNeed = 10 + 2 * packet[3];
+        }
+        if (packetSize < 10 || packetSize != packetNeed) continue;
+        packetSize = 0;
+        uint16_t check = 0x55AA ^ lidarWord(2) ^ lidarWord(4) ^ lidarWord(6);
+        for (int i = 10; i < packetNeed; i += 2) check ^= lidarWord(i);
+        if (check != lidarWord(8) || !(packet[4] & 1) || !(packet[6] & 1)) continue;
+        float start = (lidarWord(4) >> 1) / 64.0f;
+        float end = (lidarWord(6) >> 1) / 64.0f;
+        if (start >= 360 || end >= 360) continue;
+        if (packet[2] & 1) {
+            if (scanStarted) finishOwnerScan(now);
+            for (float &d : scanRange) d=INFINITY;
+            scanStart=now; scanStarted=true;
+        }
+        float span = end - start;
+        if (span < 0) span += 360;
+        int n = packet[3];
+        for (int i = 0; i < n; ++i) {
+            float mm = lidarWord(10 + 2 * i) / 4.0f;
+            if (mm < 120 || mm > 8000) continue;
+            float a = start + (n > 1 ? span * i / (n - 1) : 0);
+            a += atanf(21.8f * (155.3f - mm) / (155.3f * mm)) * 180.0f / PI;
+            a += LIDAR_ZERO_DEG;
+            while (a >= 180) a -= 360;
+            while (a < -180) a += 360;
+            if (scanStarted && fabsf(a)<=80) {
+                int bin=int(lroundf(a))+80;
+                scanRange[bin]=fminf(scanRange[bin],mm/1000.0f);
+            }
+            if (fabsf(a) <= 15) {
+                frontDistance = fminf(frontDistance, mm / 1000.0f);
+                frontTime = now;
+            }
+        }
+        DW1000Ranging.loop();
     }
 }
