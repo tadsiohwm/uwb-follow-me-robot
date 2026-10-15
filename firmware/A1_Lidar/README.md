@@ -6,6 +6,30 @@ Giữ cấu hình và thuật toán UWB của mẫu: A2 làm mốc, cộng/trừ
 
 LiDAR chỉ lấy **F: khoảng cách nhỏ nhất trong vùng trước ±15° giữa các lần in**. Kiểm tra checksum gói X3, đọc UART theo byte có sẵn, không chờ đủ byte bằng vòng lặp chặn. Không tính F trái/phải hoặc điều khiển xe. Phần cụm chủ dùng các điểm trong vùng trước **±80°**, độc lập với F ±15°. Góc UWB cũ và góc LiDAR được xuất riêng.
 
+## Đọc code theo từng hàm
+
+Bản tổ chức lại giữ nguyên thông số, thứ tự xử lý và dòng dữ liệu. Trong một file, các hàm được gom thành nhóm có tiêu đề; đọc `setup()` và `loop()` trước rồi tìm đúng nhóm cần sửa.
+
+| Hàm | Công việc |
+|---|---|
+| `setupLidar()`, `setupUwb()` | Khởi tạo UART, PWM và BU01 |
+| `readCommands()` | Nhận lệnh `c` |
+| `readUart()`, `readLine()`, `getPair()` | Nhận A2, kiểm tra checksum, ghép A1/A2 cùng poll |
+| `updateUwb()` | Chọn calibration hoặc tính góc từ cặp mới |
+| `calibrate()` | Điều phối thu mẫu, tham chiếu tạm và chốt offset |
+| `addCalibrationPair()`, `updateCalibrationReference()`, `finishCalibration()` | Các bước nhỏ của calibration |
+| `calculateAngle()`, `filterAngle()`, `finishVote()` | Tính góc, Kalman và chốt vote UWB |
+| `readLidar()`, `feedLidarByte()` | Nhận và ghép gói X3 không chặn |
+| `processLidarPacket()`, `processLidarPoint()` | Kiểm tra/xử lý gói và điểm, cập nhật F/ô góc |
+| `findClusters()` | Gọi tách cụm điểm và ghép hai cụm chân |
+| `scoreOwnerCluster()`, `chooseOwnerCluster()` | Chấm và chọn một cụm khớp UWB rõ ràng |
+| `finishOwnerScan()` | Điều phối chọn cụm, vote/khóa và lưu vị trí theo mỗi vòng quét |
+| `voteOwner()`, `rememberOwner()` | Tích lũy phiếu và cập nhật vị trí cụm |
+| `checkOwner()` | Kiểm tra mất chủ hoặc số đo cũ |
+| `printCalibrationStatus()`, `printStatus()` | In dữ liệu khi cali và sau cali |
+
+`printRanges()`, `printFront()`, `printOwner()` chỉ phụ trách từng phần A1/A2, F và góc/trạng thái chủ. Không thêm thư viện riêng hoặc tách sang nhiều tab.
+
 ## Đấu dây
 
 | Kết nối trên ESP32 A1 | GPIO |
@@ -72,3 +96,5 @@ Bản UWB mẫu riêng: [`../BU01_mau/BU01_mau.ino`](../BU01_mau/BU01_mau.ino). 
 Đã biên dịch/kiểm tra logic bằng C++ trên máy tính với Arduino/DW1000 giả lập và AddressSanitizer/UBSan: calibration hai dấu offset, ghép UART cùng poll, gói X3 phân mảnh/checksum, bỏ điểm bên hông, lấy min F, số đo hết hạn và hiển thị F độc lập với UWB; thêm kiểm tra vote thật trong calibration, không khóa sớm, theo dõi đổi góc, ghép hai chân, ứng viên mơ hồ, sai góc/range, dữ liệu cũ, mất chủ và `c` khóa lại. **Chưa biên dịch cho ESP32 hoặc thử BU01/X3 thực tế**. Chưa xác định nguyên nhân tỉ lệ gói bị từ chối cao ở log bản trước.
 
 Giao thức tham chiếu: [YDLIDAR SDK Communication Protocol](https://github.com/YDLIDAR/YDLidar-SDK/blob/master/doc/YDLidar-SDK-Communication-Protocol.md).
+
+Lần chia lại hàm: các tình huống kiểm tra cũ đều qua ASan/UBSan; toàn bộ dòng Serial thu được trong cùng các tình huống trước và sau giống nhau (2.737 byte). Đây là so sánh giả lập, chưa phải thử ESP32.

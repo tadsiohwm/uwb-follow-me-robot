@@ -4,12 +4,51 @@
 #include "Arduino.h"
 #include "DW1000Ranging.h"
 // Arduino IDE adds these declarations automatically; host C++ does not.
-void newRange(); void connectionChanged(DW1000Device*); void resetMeasurements();
-void readUart(uint32_t); void readLine(uint32_t); bool getPair(float&,float&,uint32_t);
-void calibrate(float,float,bool,uint32_t); void calculateAngle(float,float,uint32_t);
-void filterAngle(float,float,float,uint32_t); void finishVote(uint32_t);
-void readLidar(uint32_t); void printFront(uint32_t); void printRanges(uint32_t);
-void checkOwner(uint32_t); void printOwner(uint32_t); void setUwbReference(float,float,uint32_t);
+void setup();
+void loop();
+void setupLidar();
+void setupUwb();
+void readCommands(uint32_t now);
+void handleTagChange();
+void newRange();
+void connectionChanged(DW1000Device *device);
+void resetMeasurements();
+void readUart(uint32_t now);
+void readLine(uint32_t now);
+bool getPair(float &d1, float &d2, uint32_t now);
+void updateUwb(uint32_t now);
+void resetCalibration();
+void addCalibrationPair(float d1, float d2, uint32_t now);
+void updateCalibrationReference(uint32_t now);
+void finishCalibration(uint32_t now);
+void calibrate(float d1, float d2, bool gotPair, uint32_t now);
+void calculateAngle(float d1, float d2, uint32_t now);
+void filterAngle(float measured, float d1, float d2, uint32_t now);
+void clearVotes();
+int chooseDirection();
+void finishVote(uint32_t now);
+void setUwbReference(float d1, float d2, uint32_t now);
+void readLidar(uint32_t now);
+void feedLidarByte(uint8_t b, uint32_t now);
+uint16_t lidarWord(int i);
+bool checkLidarPacket();
+void beginLidarScan(uint32_t now);
+void processLidarPacket(uint32_t now);
+void processLidarPoint(float a, float mm, uint32_t now);
+void findClusters();
+void splitClusters();
+void mergeLegClusters();
+void finishOwnerScan(uint32_t now);
+float scoreOwnerCluster(int index);
+int chooseOwnerCluster();
+void voteOwner(int selected, uint32_t now);
+void rememberOwner(int selected, uint32_t now);
+void checkOwner(uint32_t now);
+void printCalibrationStatus(uint32_t now);
+void printStatus(uint32_t now, int winner);
+void printRanges(uint32_t now);
+void printFront(uint32_t now);
+void printOwner(uint32_t now);
 #include "../../firmware/A1_Lidar/A1_Lidar.ino"
 
 void resetAll() {
