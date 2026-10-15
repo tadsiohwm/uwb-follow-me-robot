@@ -26,9 +26,12 @@ void findClusters();
 void finishOwnerScan(uint32_t now);
 uint16_t lidarWord(int i);
 void readLidar(uint32_t now);
+void printUwbDebug();
 #include "../../firmware/A1_Lidar/A1_Lidar.ino"
 
 void resetAll() {
+    DW1000Ranging.loopHook=nullptr; DW1000Ranging.device=nullptr; DW1000Ranging.loopCalls=0;
+    a1Rx=a2Bytes=a2Ok=pairCount=0; lastAddress=0; lastA2Flag=-2;
     a1={}; a2={}; cal={}; calibrated=filterReady=havePair=tagChanged=false;
     offset=angle=variance=0; direction=3; lastDirection=-1; clearVotes();
     lastPair=lastAngle=voteStart=lastStatus=lastUart=mockTime=0;
@@ -39,10 +42,13 @@ void resetAll() {
     for(float &d:scanRange) d=INFINITY;
     Serial.output.clear(); Serial.input.clear(); Uart.input.clear(); LidarSerial.input.clear();
 }
-void sendA2(const char* body, uint32_t now, bool corrupt=false) {
+void queueA2(const char* body, bool corrupt=false) {
     uint8_t crc=0; for(const char* p=body; *p; ++p) crc^=uint8_t(*p);
     char msg[80]; snprintf(msg,sizeof(msg),"$%s*%02X\n",body,crc^(corrupt?1:0));
     for(const char* p=msg; *p; ++p) Uart.input.push_back(*p);
+}
+void sendA2(const char* body, uint32_t now, bool corrupt=false) {
+    queueA2(body,corrupt);
     lastUart=now; readUart(now);
 }
 void feed(const std::vector<uint8_t>& bytes, uint32_t now) {
@@ -74,6 +80,15 @@ void surface(float a,int mm,uint32_t t,int halfWidth=5) {
 void referenceAt(float a,float r,uint32_t t) {
     float x=r*sinf(a*PI/180), y=r*cosf(a*PI/180);
     calculateAngle(hypotf(x+L/2,y),hypotf(x-L/2,y),t);
+}
+// Simulate a second UWB result becoming ready while a LiDAR packet is processed.
+DW1000Device nextDevice;
+void injectNextA1Poll() {
+    if(DW1000Ranging.loopCalls!=2) return;
+    nextDevice.timePollSent.value=124;
+    nextDevice.range=1.1f;
+    DW1000Ranging.device=&nextDevice;
+    newRange();
 }
 int main() {
     resetAll();
@@ -211,5 +226,22 @@ int main() {
     // A torso-like surface that is too broad for the configured gate is rejected.
     resetAll(); calibrated=true; startScan(0); referenceAt(0,1.3f,80);
     surface(0,1300,90,18); startScan(100); assert(clusterCount==0);
-    std::cout<<"PASS: waist widths/no leg merging, owner votes/lock/continuity/ambiguity/loss/recalibration; PASS: BU01 calibration/pairing, X3 framing/checksum/front-only, independent display, expiry and recalibration\n";
+    // The matched poll 123 must be consumed before LiDAR can replace A1 with poll 124.
+    resetAll(); mockTime=lastUart=100;
+    a1={1.1f,123,100,true};
+    queueA2("A2,123,1200,0,1");
+    for(auto b:point(10,1000)) LidarSerial.input.push_back(b);
+    DW1000Ranging.loopHook=injectNextA1Poll;
+    loop();
+    assert(usedPoll==123 && havePair && cal.started);
+    // The new A1 sample is still available for the next A2 frame.
+    assert(a1.poll==124 && a1.fresh);
+    mockTime=110; queueA2("A2,124,1200,0,1"); loop();
+    assert(usedPoll==124 && pairCount==2 && a1Rx==1 && a2Ok==2 && a2Bytes>0);
+    // Debug is optional and records raw reception independently of owner detection.
+    Serial.output.clear(); Serial.input.push_back('d'); mockTime=120; loop();
+    assert(Serial.output.find("A1_rx=1 addr=0x007D")!=std::string::npos);
+    assert(Serial.output.find("A2_ok=2 flag=1 | PAIR=2")!=std::string::npos);
+    DW1000Ranging.loopHook=nullptr;
+    std::cout<<"PASS: UWB-first poll overwrite regression/debug; waist widths/no leg merging, owner votes/lock/continuity/ambiguity/loss/recalibration; PASS: BU01 calibration/pairing, X3 framing/checksum/front-only, independent display, expiry and recalibration\n";
 }

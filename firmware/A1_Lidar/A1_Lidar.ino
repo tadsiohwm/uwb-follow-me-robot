@@ -89,6 +89,10 @@ char line[64];
 int lineLength = -1; // -1: chua gap dau '$'.
 uint32_t lineStart = 0, lastUart = 0;
 bool discardUart = true;
+// Chi in khi gui d: phan biet mat A1, mat UART A2 va khong ghep duoc cap.
+uint32_t a1Rx = 0, a2Bytes = 0, a2Ok = 0, pairCount = 0;
+uint16_t lastAddress = 0;
+int lastA2Flag = -2; // -2: chua nhan dong A2 hop le ve dinh dang.
 
 void setup() {
     Serial.setTxBufferSize(512);
@@ -120,12 +124,13 @@ void loop() {
         tagChanged = false;
     }
     readUart(now);
-    readLidar(now);
-    now = millis(); // readLidar co the goi callback UWB; lay lai moc thoi gian.
-    if (Serial.available() && Serial.read() == 'c') {
-        calibrated = false; offset = 0;
-        resetMeasurements(); lastStatus = now;
-        Serial.println("CALIB_LAI: GIU TAG YEN O GIUA 1 m; CHO CHU=DA_KHOA");
+    if (Serial.available()) {
+        char command = char(Serial.read());
+        if (command == 'c') {
+            calibrated = false; offset = 0;
+            resetMeasurements(); lastStatus = now;
+            Serial.println("CALIB_LAI: GIU TAG YEN O GIUA 1 m; CHO CHU=DA_KHOA");
+        } else if (command == 'd') printUwbDebug();
     }
     float d1 = 0, d2 = 0;
     const bool gotPair = getPair(d1, d2, now);
@@ -134,11 +139,16 @@ void loop() {
     else if (gotPair) calculateAngle(d1 + offset, d2, now);
     checkOwner(now);
     finishVote(now);
+    // Ghep cap UWB truoc: callback trong LiDAR co the thay mau A1 bang poll moi.
+    readLidar(millis());
 }
 
 void newRange() {
     DW1000Device *device = DW1000Ranging.getDistantDevice();
-    if (!device || device->getShortAddress() != TAG_SHORT) return;
+    if (!device) return;
+    lastAddress = device->getShortAddress();
+    if (lastAddress != TAG_SHORT) return;
+    ++a1Rx;
     a1 = {device->getRange(), uint64_t(device->timePollSent.getTimestamp()) & POLL_MASK,
           millis(), true};
 }
@@ -173,6 +183,7 @@ void readUart(uint32_t now) {
     if (lineLength >= 0 && uint32_t(now - lineStart) > 20) lineLength = -1;
     for (int i = 0; i < 64 && Uart.available(); ++i) {
         const char c = char(Uart.read());
+        ++a2Bytes;
         if (discardUart) continue;
         if (c == '$') {
             lineLength = 0;
@@ -204,6 +215,7 @@ void readLine(uint32_t now) {
     char extra;
     if (sscanf(line, "A2,%13llu,%5ld,%2lu,%2d%c", &poll, &mm, &age, &valid, &extra) != 4 ||
         poll > POLL_MASK || age > MAX_AGE || valid < -1 || valid > 1) return;
+    lastA2Flag = valid;
     if (valid == -1) {
         resetMeasurements();
         remotePoll = NO_POLL;
@@ -217,6 +229,7 @@ void readLine(uint32_t now) {
         return;
     }
     a2 = {mm / 1000.0f, uint64_t(poll), now - uint32_t(age), true};
+    ++a2Ok;
 }
 
 bool getPair(float &d1, float &d2, uint32_t now) {
@@ -229,6 +242,7 @@ bool getPair(float &d1, float &d2, uint32_t now) {
     if (a1.poll == usedPoll || !isfinite(d1) || !isfinite(d2) ||
         d1 <= 0 || d2 <= 0 || d1 > MAX_RANGE || d2 > MAX_RANGE) return false;
     usedPoll = a1.poll;
+    ++pairCount;
     havePair = true;
     lastPair = now;
     if (DEBUG_LOG) Serial.printf("PAIR,d1_raw=%.3f,d2_raw=%.3f\n", d1, d2);
@@ -518,4 +532,11 @@ void readLidar(uint32_t now) {
         }
         DW1000Ranging.loop();
     }
+}
+
+// So dem tich luy tu luc bat nguon; gui d hai lan de xem cot nao dang tang.
+void printUwbDebug() {
+    Serial.printf("DBG | A1_rx=%lu addr=0x%04X | A2_bytes=%lu A2_ok=%lu flag=%d | PAIR=%lu\n",
+                  (unsigned long)a1Rx, unsigned(lastAddress), (unsigned long)a2Bytes,
+                  (unsigned long)a2Ok, lastA2Flag, (unsigned long)pairCount);
 }

@@ -27,7 +27,7 @@ Nối GND chung. Giữ dây dữ liệu X3 đang chạy ở bản ghép trước
 3. Giữ Tag đứng yên trên đường trung trực hai Anchor, khoảng 1 m phía trước, cùng mặt phẳng đo như BU01 mẫu. Chờ `CALIB_OK`.
 4. Giữ nguyên vị trí đến khi `CHU=DA_KHOA`. Trong lúc calibration, code vote cụm LiDAR khớp UWB; chỉ khóa sau khi offset đã chốt và đủ **5 vòng quét mới liên tiếp**. Nếu chưa đủ, tiếp tục chờ ở `CHU=CHO_n/5`.
 5. Di chuyển chậm sang hai phía phía trước xe. `goc_lidar` là góc tâm cụm theo LiDAR, cập nhật theo cụm đang theo dõi; `goc` vẫn là góc Kalman/vote UWB. Dương là bên phải, âm là bên trái nếu lắp đúng trục.
-6. `CHU=MAT_CHU` nghĩa là mất cụm hoặc dữ liệu tham chiếu. Bản này không tự gán người khác vào mục tiêu: về giữa khoảng 1 m rồi gửi `c` để calibration/khóa lại. Không có lệnh `s`/`r`.
+6. `CHU=MAT_CHU` nghĩa là mất cụm hoặc dữ liệu tham chiếu. Bản này không tự gán người khác vào mục tiêu: về giữa khoảng 1 m rồi gửi `c` để calibration/khóa lại. Gửi `d` để xem số đếm nhận UWB khi cần kiểm tra. Không có lệnh `s`/`r`.
 
 Vẫn in A1/A2/F khi chưa khóa hoặc đã mất chủ. Trong lúc đang calibration in mỗi giây; sau calibration in mỗi 500 ms. Không cần đứng ngoài 1,3 m mới xem được F.
 
@@ -68,10 +68,29 @@ Các thông số cần đúng với cách lắp:
 
 Mặc định giả sử LiDAR gần trung điểm hai Anchor, A1 bên trái/A2 bên phải, Tag ở gần cùng cao độ với Anchor. Nếu Tag ở eo và Anchor thấp hơn, đo chênh cao và sửa `TAG_HEIGHT_DIFF_M`. Phần góc UWB gốc vẫn giữ mô hình phẳng của BU01 mẫu; tham số chênh cao dùng cho phần ghép cụm mới. LiDAR phải quét trúng **eo**; mặt phẳng quét ở chân không thể chuyển thành đo eo chỉ bằng phần mềm. Chiều rộng cụm là bề rộng bề mặt đang nhìn thấy, thay đổi khi xoay người, mặc quần áo, bị tay hoặc vật khác che; cần thử cả hướng chính diện lẫn hướng ngang trước khi chỉnh ngưỡng.
 
+## Bản sửa ưu tiên UWB và kiểm tra nhận A1/A2
+
+Phần LiDAR được xử lý **sau khi ghép và xử lý cặp UWB**, theo thứ tự của BU01 mẫu. Trước đây, callback UWB được gọi trong phần đọc LiDAR có thể ghi đè mẫu A1 bằng poll tiếp theo trước khi A1 cũ được ghép với A2. Đã tái hiện việc mất cặp này trong host test và kiểm tra bản sửa giữ được cả poll cũ lẫn poll tiếp theo. Đây là lỗi có thể xảy ra trong code; chưa có log phần cứng để kết luận đó là toàn bộ nguyên nhân người dùng không thấy A1/A2.
+
+Gửi `d` trong Serial Monitor để in một dòng chẩn đoán. Gửi hai lần cách nhau khoảng 1 giây và xem cột nào tăng; bộ đếm tích lũy từ khi bật nguồn, không xóa bởi `c`. Dòng thường A1/A2/F/góc/trạng thái chủ giữ nguyên.
+
+| Cột DBG | Ý nghĩa |
+|---|---|
+| `A1_rx` | Số callback range A1 nhận được đúng short address Tag 0x007D |
+| `addr` | Short address của thiết bị trong callback range gần nhất |
+| `A2_bytes` | Tổng byte đọc từ UART2 của A2, kể cả dữ liệu không hợp lệ/bị bỏ |
+| `A2_ok` | Số mẫu A2 mới qua kiểm tra checksum, định dạng, range và tuổi mẫu |
+| `flag` | Trạng thái cuối do A2 gửi: 1 = báo phép đo hợp lệ, 0 = báo không hợp lệ, -1 = sự kiện reset/kết nối; -2 = chưa đọc được dòng đúng định dạng/checksum |
+| `PAIR` | Số cặp A1/A2 cùng poll và đủ mới đã được ghép |
+
+`A1_rx` không tăng: kiểm tra đường UWB A1–Tag, địa chỉ và mode. `A2_bytes` không tăng: kiểm tra A2 TX → A1 GPIO16, GND chung và nguồn A2. Byte tăng nhưng `A2_ok` không tăng: cần xem phiên bản/gói UART, flag và tuổi mẫu. Cả hai nhận mẫu mà `PAIR` không tăng: chưa ghép được cùng poll trong cửa sổ 80 ms, cần đối chiếu code Tag/A2 đang nạp.
+
+Bản sửa giữ nguyên chân: BU01 CS4/RST27/IRQ34, SPI18/19/23; A2 RX16/TX17; LiDAR RX32/motor25. Không đổi thư viện, mode, antenna delay hoặc ngưỡng nhận cụm eo.
+
 ## Code BU01 mẫu và kiểm tra
 
 Bản UWB mẫu riêng: [`../BU01_mau/BU01_mau.ino`](../BU01_mau/BU01_mau.ino). Bản Markdown gửi gốc lưu tại `docs/source/BU01_mau_original.md` để đối chiếu. Bản riêng chỉ chuẩn hóa escape/khoảng trắng, giữ thuật toán và cấu hình người dùng.
 
-Đã biên dịch/kiểm tra logic bằng C++ trên máy tính với Arduino/DW1000 giả lập và AddressSanitizer/UBSan: calibration hai dấu offset, ghép UART cùng poll, gói X3 phân mảnh/checksum, bỏ điểm bên hông, lấy min F, số đo hết hạn và hiển thị F độc lập với UWB; thêm kiểm tra vote thật trong calibration, không khóa sớm, theo dõi đổi góc, cụm eo liên tục, loại cụm hẹp/rộng, không ghép hai ứng viên eo, ứng viên mơ hồ, sai góc/range, dữ liệu cũ, mất chủ và `c` khóa lại. **Chưa biên dịch cho ESP32 hoặc thử BU01/X3 thực tế**. Chưa xác định nguyên nhân tỉ lệ gói bị từ chối cao ở log bản trước.
+Đã biên dịch/kiểm tra logic bằng C++ trên máy tính với Arduino/DW1000 giả lập và AddressSanitizer/UBSan: calibration hai dấu offset, ghép UART cùng poll, gói X3 phân mảnh/checksum, bỏ điểm bên hông, lấy min F, số đo hết hạn và hiển thị F độc lập với UWB; thêm kiểm tra vote thật trong calibration, không khóa sớm, theo dõi đổi góc, cụm eo liên tục, loại cụm hẹp/rộng, không ghép hai ứng viên eo, ứng viên mơ hồ, sai góc/range, dữ liệu cũ, mất chủ và `c` khóa lại. **Chưa biên dịch cho ESP32 hoặc thử BU01/X3 thực tế**. Chưa xác định nguyên nhân tỉ lệ gói LiDAR bị từ chối cao ở log bản trước; sửa ưu tiên UWB không thay phần checksum LiDAR.
 
 Giao thức tham chiếu: [YDLIDAR SDK Communication Protocol](https://github.com/YDLIDAR/YDLidar-SDK/blob/master/doc/YDLidar-SDK-Communication-Protocol.md).
