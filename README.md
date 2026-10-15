@@ -2,9 +2,13 @@
 
 Đồ án xe tự hành hỗ trợ mua sắm dùng 3 module BU01 (DW1000), mỗi module nối với một ESP32 thường. Người mang Tag; hai Anchor đặt trên xe.
 
-## Bản thử A1 + LiDAR (14/10/2026)
+## Bản hiện tại: BU01 mẫu + F LiDAR (15/10/2026)
 
-Xem [sketch A1_Lidar và hướng dẫn](firmware/A1_Lidar/README.md): calibration lấy A2 làm mốc, khóa/bám mục tiêu UWB–LiDAR, dừng và xác nhận lại theo state. Dữ liệu LiDAR chuyển sang GPIO32/UART1; A2 giữ UART2 RX16/TX17. Bản này chỉ xuất lệnh logic để test, chưa điều khiển servo/động cơ xe. Cần **Tag và A2 UART hiện tại của chủ dự án**, không dùng hai sketch lịch sử dưới đây thay thế. Đã kiểm tra logic bằng host mocks; chưa biên dịch ESP32 hoặc thử phần cứng.
+[**A1_Lidar**](firmware/A1_Lidar/README.md) là một file `.ino` để xem **A1, A2, góc UWB và F phía trước**. Làm lại từ code UWB người dùng gửi: giữ calibration A2 làm mốc/bù A1, Kalman và vote UWB. Bỏ trái/phải LiDAR và phần khóa/bám chủ theo state. LiDAR dùng GPIO32/UART1, motor25; A2 giữ RX16/TX17/UART2. Có lệnh `c` lấy lại calibration; chỉ hiển thị dữ liệu.
+
+Từ đây, **“code BU01 mẫu”** là [bản UWB riêng được gửi ngày 15/10/2026](firmware/BU01_mau/BU01_mau.ino), không phải bản state. Lưu [Markdown gửi gốc](docs/source/BU01_mau_original.md) để đối chiếu.
+
+Bản state ngày 14/10 được giữ trong [lịch sử commit 150ed16](https://github.com/tadsiohwm/uwb-follow-me-robot/tree/150ed16caac5e03af148e659a1d55bf728951ec8/firmware/A1_Lidar). Bản hiện tại đã kiểm tra bằng C++ host mocks với ASan/UBSan; chưa biên dịch ESP32 hoặc thử BU01/X3 thực tế.
 
 ## Phiên bản gốc
 
