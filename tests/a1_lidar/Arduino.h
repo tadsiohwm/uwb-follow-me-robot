@@ -13,12 +13,13 @@ inline void delay(unsigned long n){mockTime+=n;}
 struct HardwareSerial {
     std::deque<uint8_t> input;
     std::string output;
+    int txSpace=512;
     HardwareSerial(int=0){}
     void begin(int,int=0,int=0,int=0){}
     void setRxBufferSize(int){}
     int available(){return input.size();}
     int read(){if(input.empty()) return -1; int c=input.front();input.pop_front();return c;}
-    int availableForWrite(){return 512;}
+    int availableForWrite(){return txSpace;}
     void setTxBufferSize(int){}
     size_t write(const uint8_t* p, size_t n){output.append(reinterpret_cast<const char*>(p), n); return n;}
     void print(const char* p){output += p;}

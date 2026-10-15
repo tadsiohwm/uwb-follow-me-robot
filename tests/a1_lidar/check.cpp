@@ -27,7 +27,21 @@ void finishOwnerScan(uint32_t now);
 uint16_t lidarWord(int i);
 void readLidar(uint32_t now);
 void printUwbDebug();
+bool signalGood(float rx, float fp);
+bool uwbReliable(uint32_t now);
+void printSignal(uint32_t now);
 #include "../../firmware/A1_Lidar/A1_Lidar.ino"
+
+// Compile the actual A2 sketch too; namespace separates its Arduino entry points.
+namespace A2Firmware {
+void newRange();
+void newBlink(DW1000Device *device);
+void inactiveDevice(DW1000Device *device);
+void serviceUartTx();
+uint8_t uartChecksum(const char *text);
+int powerToWire(float dbm);
+#include "../../firmware/A2_RXFP/A2_RXFP.ino"
+}
 
 void resetAll() {
     DW1000Ranging.loopHook=nullptr; DW1000Ranging.device=nullptr; DW1000Ranging.loopCalls=0;
@@ -90,7 +104,106 @@ void injectNextA1Poll() {
     DW1000Ranging.device=&nextDevice;
     newRange();
 }
+
+void testRxFp() {
+    resetAll(); mockTime=100;
+    DW1000Device device;
+    device.range=1.234f; device.rx=-81.25f; device.fp=-83.5f;
+    device.timePollSent.value=123;
+    DW1000Ranging.device=&device;
+    newRange(); A2Firmware::newRange();
+    // Registers/device values changing later must not change the saved sample.
+    device.range=9; device.rx=-110; device.fp=-120;
+    A2Firmware::AnchorUart.output.clear(); A2Firmware::tagLostPending=false;
+    A2Firmware::AnchorUart.txSpace=127;
+    A2Firmware::serviceUartTx();
+    assert(A2Firmware::samplePending && A2Firmware::AnchorUart.output.empty());
+    A2Firmware::AnchorUart.txSpace=128;
+    A2Firmware::serviceUartTx();
+    const std::string frame=A2Firmware::AnchorUart.output;
+    assert(frame.find("$A2,123,1234,0,1,-8125,-8350*")==0 && frame.size()<64);
+    for(char c:frame) Uart.input.push_back(c);
+    lastUart=100; readUart(100);
+    float d1,d2;
+    assert(getPair(d1,d2,100) && fabsf(d1-d2)<0.001f);
+    assert(a1.rx==-81.25f && a2.rx==-81.25f && a2.fp==-83.5f);
+    assert(uwbReliable(100));
+    Serial.output.clear(); printSignal(100);
+    assert(Serial.output==" | RX1=-81.2 FP1=-83.5 | RX2=-81.2 FP2=-83.5 | TIN_CAY=1");
+    assert(!uwbReliable(175)); // A2: 6 ms transport allowance + 75 ms elapsed.
+    a1.poll=124; assert(!uwbReliable(100)); a1.poll=123;
+    a1.fp=-90; assert(!uwbReliable(100)); a1.fp=-83.5f;
+    a2.rx=-96; assert(!uwbReliable(100)); a2.rx=-81.25f;
+    a2.fp=-101; assert(!uwbReliable(100)); a2.fp=-83.5f;
+    a2.fp=NAN; assert(!uwbReliable(100)); a2.fp=-83.5f;
+    a1.range=0.24f; a2.range=1.6f; assert(!uwbReliable(100));
+    calibrated=true; offset=1.36f; assert(uwbReliable(100));
+    // A flag cannot prove true distance: a large offset can pass these heuristics.
+    sendA2("A2,124,0,0,0,-8000,-8200",110);
+    assert(!uwbReliable(110)); // New invalid A2 must not leave the previous pair trusted.
+    assert(!signalGood(NAN,-82) && !signalGood(-80,INFINITY));
+    assert(!signalGood(0,0) && !signalGood(-80,-86));
+
+    resetAll(); mockTime=200;
+    sendA2("A2,1,1200,0,1,-8000,-8200",200);
+    a1={1.2f,1,200,true,-80,-82};
+    assert(getPair(d1,d2,200) && uwbReliable(200));
+    sendA2("A2,2,1200,0,1",210); // Old firmware still ranges, but never inherits old power.
+    a1={1.2f,2,210,true,-80,-82};
+    assert(getPair(d1,d2,210) && !isfinite(a2.rx) && !isfinite(a2.fp));
+    assert(!uwbReliable(210));
+    const uint64_t previous=remotePoll;
+    sendA2("A2,3,1200,0,1,-8000",220); assert(remotePoll==previous);
+    sendA2("A2,3,1200,0,1,-8000,-8200,x",220); assert(remotePoll==previous);
+    sendA2("A2,3,1200,0,1,-8000,-8200",220,true); assert(remotePoll==previous);
+    sendA2("A2,3,1200,0,1,32767,-8200",220);
+    a1={1.2f,3,220,true,-80,-82};
+    assert(getPair(d1,d2,220) && !uwbReliable(220) && !isfinite(a2.rx));
+    sendA2("A2,4,1200,75,1,-8000,-8200",230); assert(!a2.fresh);
+    sendA2("A2,0,0,0,-1,32767,32767",240); assert(!havePair && !uwbReliable(240));
+
+    // Longest supported frame, and actual A2 handling of old/invalid/non-Tag samples.
+    resetAll(); mockTime=1000; device={}; device.range=10;
+    device.rx=device.fp=-200; device.timePollSent.value=POLL_MASK;
+    DW1000Ranging.device=&device;
+    newRange(); A2Firmware::newRange(); mockTime=1074;
+    A2Firmware::AnchorUart.output.clear(); A2Firmware::serviceUartTx();
+    assert(A2Firmware::AnchorUart.output.size()<64);
+    for(char c:A2Firmware::AnchorUart.output) Uart.input.push_back(c);
+    a1.time=lastUart=1074; readUart(1074);
+    assert(getPair(d1,d2,1074) && a2.poll==POLL_MASK && a2.rx==-200 && !uwbReliable(1074));
+    A2Firmware::newRange(); mockTime+=75;
+    A2Firmware::AnchorUart.output.clear(); A2Firmware::serviceUartTx();
+    assert(A2Firmware::AnchorUart.output.empty() && !A2Firmware::samplePending);
+    device.range=NAN; device.rx=NAN; device.fp=INFINITY;
+    A2Firmware::newRange(); A2Firmware::serviceUartTx();
+    assert(A2Firmware::AnchorUart.output.find(",0,0,0,32767,32767*")!=std::string::npos);
+    A2Firmware::inactiveDevice(&device);
+    A2Firmware::AnchorUart.output.clear(); A2Firmware::serviceUartTx();
+    assert(A2Firmware::AnchorUart.output.find("$A2,0,0,0,-1,32767,32767*")==0);
+    device.address=0x9999; A2Firmware::newRange(); assert(!A2Firmware::samplePending);
+
+    // Log labels and truthful lock status; adding telemetry must not change owner state.
+    resetAll(); Serial.output.clear(); calibrate(0,0,false,1000);
+    assert(Serial.output.find("CALIB | sc=0 | A1=-- | A2=-- | F=-- | ag_lidar=-- | CALIB_0/5")!=std::string::npos);
+    assert(Serial.output.find("DA_KHOA")==std::string::npos && Serial.output.find("TIN_CAY=0")!=std::string::npos);
+    owner.locked=true; owner.x=0; owner.y=1; owner.time=1000;
+    referenceValid=true; referenceTime=1000;
+    Serial.output.clear(); printOwner(1000); printSignal(1000);
+    assert(Serial.output.find("ag_lidar=0.0 do | DA_KHOA")!=std::string::npos);
+    assert(Serial.output.find("TIN_CAY=0")!=std::string::npos && owner.locked);
+    assert(Serial.output.find("CHU=")==std::string::npos);
+    resetMeasurements(); assert(!uwbReliable(1000));
+    // Time subtraction must still work when millis wraps.
+    resetAll(); mockTime=UINT32_MAX-10; device={}; device.range=1.2f;
+    DW1000Ranging.device=&device; newRange();
+    sendA2("A2,0,1200,0,1,-8000,-8200",mockTime);
+    assert(getPair(d1,d2,mockTime) && uwbReliable(10));
+    assert(!uwbReliable(100));
+    std::cout<<"PASS: real A2 RX/FP callback snapshot -> UART -> A1; legacy/malformed/stale/weak/missing powers, pair freshness, compact truthful log\n";
+}
 int main() {
+    testRxFp();
     resetAll();
     for(uint32_t t=0;t<=5100;t+=100) calibrate(1.1f,1.2f,true,t);
     assert(calibrated && fabsf(offset-0.1f)<1e-5f);
@@ -141,7 +254,7 @@ int main() {
     // No state or lock gate: F still prints when UWB is absent.
     Serial.output.clear(); calibrated=false; lastStatus=0;
     feed(point(10,800),1950); calibrate(0,0,false,2000);
-    assert(Serial.output.find("CALIB:")!=std::string::npos &&
+    assert(Serial.output.find("CALIB | sc=")!=std::string::npos &&
            Serial.output.find("F=0.800 m")!=std::string::npos);
     mockTime=2050; Serial.input.push_back('c'); calibrated=true; loop();
     assert(!calibrated && offset==0);
@@ -163,14 +276,14 @@ int main() {
     referenceAt(10,1.3f,5280); surface(10,1300,5290); startScan(5300);
     assert(owner.locked && fabsf(atan2f(owner.x,owner.y)*180/PI-10)<0.3f);
     Serial.output.clear(); printOwner(5300);
-    assert(Serial.output.find("goc_lidar=10.0 do | CHU=DA_KHOA")!=std::string::npos);
+    assert(Serial.output.find("ag_lidar=10.0 do | DA_KHOA")!=std::string::npos);
     // Missing surface loses ownership; a later nearby person cannot silently take over.
     referenceAt(10,1.3f,5880); checkOwner(5881);
     assert(!owner.locked && owner.lost);
     referenceAt(10,1.3f,5980); surface(10,1300,5990); startScan(6000);
     assert(!owner.locked && owner.lost);
     Serial.output.clear(); printOwner(6000);
-    assert(Serial.output==" | goc_lidar=-- | CHU=MAT_CHU");
+    assert(Serial.output==" | ag_lidar=-- | MAT_CHU");
     mockTime=6010; Serial.input.push_back('c'); loop();
     assert(!calibrated && !owner.lost && !owner.locked && owner.votes==0);
 

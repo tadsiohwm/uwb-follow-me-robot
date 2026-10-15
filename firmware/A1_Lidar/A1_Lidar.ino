@@ -1,4 +1,4 @@
-/* BU01 mau + LiDAR X3: vote cum eo khi cali, theo doi va hien thi goc_lidar.
+/* BU01 mau + LiDAR X3: vote cum eo khi cali, theo doi va hien thi ag_lidar.
    Dat mat phang quet LiDAR ngang eo, Tag deo o eo. Khong ghep hai chan.
    Giu Tag yen o giua, phia truoc khoang 1 m khi bat nguon de cali.
    A1 da cong offset; A2 la moc. F la diem gan nhat trong vung truoc +/-15 do.
@@ -24,6 +24,8 @@ const float L = 0.4f, MAX_RANGE = 10.0f, MAX_STD = 0.10f;
 const float KALMAN_Q = 36.0f, KALMAN_R = 25.0f;
 const uint32_t FILTER_RESET_MS = 800;
 const bool DEBUG_LOG = false;
+// Nguong THU NGHIEM; RX/FP chi danh gia tin hieu, khong do duoc sai so cm.
+const float MIN_RX_DBM = -95, MIN_FP_DBM = -100, MAX_RX_FP_DB = 6;
 const uint64_t POLL_MASK = (uint64_t(1) << 40) - 1;
 const uint64_t NO_POLL = UINT64_MAX; // Nam ngoai timestamp 40 bit: chua co mau.
 HardwareSerial Uart(2);
@@ -63,6 +65,7 @@ struct Sample {
     uint64_t poll = 0;
     uint32_t time = 0; // Thoi diem mau quy ve dong ho A1, da tru tuoi A2 gui.
     bool fresh = false;
+    float rx = NAN, fp = NAN; // dBm, luu cung mau range/poll.
 };
 Sample a1, a2;
 uint64_t remotePoll = NO_POLL, usedPoll = NO_POLL;
@@ -112,7 +115,7 @@ void setup() {
     DW1000Ranging.attachInactiveDevice(connectionChanged);
     DW1000Ranging.startAsAnchor(ADDRESS, DW1000.MODE_SHORTDATA_FAST_LOWPOWER, false);
     lastUart = voteStart = lastStatus = millis();
-    Serial.println("A1 READY | GIU TAG YEN O GIUA, PHIA TRUOC 1 m; CHO CHU=DA_KHOA.");
+    Serial.println("A1 READY | GIU TAG YEN O GIUA, PHIA TRUOC 1 m; CHO DA_KHOA.");
 }
 
 void loop() {
@@ -129,7 +132,7 @@ void loop() {
         if (command == 'c') {
             calibrated = false; offset = 0;
             resetMeasurements(); lastStatus = now;
-            Serial.println("CALIB_LAI: GIU TAG YEN O GIUA 1 m; CHO CHU=DA_KHOA");
+            Serial.println("CALIB_LAI: GIU TAG YEN O GIUA 1 m; CHO DA_KHOA");
         } else if (command == 'd') printUwbDebug();
     }
     float d1 = 0, d2 = 0;
@@ -150,7 +153,7 @@ void newRange() {
     if (lastAddress != TAG_SHORT) return;
     ++a1Rx;
     a1 = {device->getRange(), uint64_t(device->timePollSent.getTimestamp()) & POLL_MASK,
-          millis(), true};
+          millis(), true, device->getRXPower(), device->getFPPower()};
 }
 
 void connectionChanged(DW1000Device *device) {
@@ -172,7 +175,7 @@ void resetMeasurements() {
     if (!calibrated) { cal = {}; owner = {}; } // Da cali thi giu offset khi mat Tag.
 }
 
-// UART A2: $A2,poll,range_mm,age_ms,valid*HH\n. HH la checksum XOR.
+// UART A2: them ,rx100,fp100 truoc *HH; van nhan dong cu khong co RX/FP.
 void readUart(uint32_t now) {
     if (uint32_t(now - lastUart) > MAX_AGE || Uart.available() > 128) {
         discardUart = true;
@@ -212,9 +215,16 @@ void readLine(uint32_t now) {
     long mm;
     unsigned long age;
     int valid;
+    int rx100 = 32767, fp100 = 32767; // 32767: khong co power.
     char extra;
-    if (sscanf(line, "A2,%13llu,%5ld,%2lu,%2d%c", &poll, &mm, &age, &valid, &extra) != 4 ||
-        poll > POLL_MASK || age > MAX_AGE || valid < -1 || valid > 1) return;
+    const int fields = sscanf(line, "A2,%13llu,%5ld,%2lu,%2d,%6d,%6d%c",
+                              &poll, &mm, &age, &valid, &rx100, &fp100, &extra);
+    if (fields != 6) {
+        rx100 = fp100 = 32767;
+        if (sscanf(line, "A2,%13llu,%5ld,%2lu,%2d%c",
+                   &poll, &mm, &age, &valid, &extra) != 4) return;
+    }
+    if (poll > POLL_MASK || age > MAX_AGE || valid < -1 || valid > 1) return;
     lastA2Flag = valid;
     if (valid == -1) {
         resetMeasurements();
@@ -228,7 +238,9 @@ void readLine(uint32_t now) {
         a1.fresh = a2.fresh = false;
         return;
     }
-    a2 = {mm / 1000.0f, uint64_t(poll), now - uint32_t(age), true};
+    a2 = {mm / 1000.0f, uint64_t(poll), now - uint32_t(age), true,
+          rx100 >= -20000 && rx100 <= 0 ? rx100 / 100.0f : NAN,
+          fp100 >= -20000 && fp100 <= 0 ? fp100 / 100.0f : NAN};
     ++a2Ok;
 }
 
@@ -258,10 +270,11 @@ void calibrate(float d1, float d2, bool gotPair, uint32_t now) {
     }
     if (uint32_t(now - lastStatus) >= 1000) {
         lastStatus = now;
-        Serial.printf("CALIB: GIU TAG YEN | so cap=%lu | ", (unsigned long)cal.count);
+        Serial.printf("CALIB | sc=%lu | ", (unsigned long)cal.count);
         printRanges(now);
         printFront(now);
         printOwner(now);
+        printSignal(now);
         Serial.println();
     }
     if (!gotPair) return;
@@ -355,6 +368,7 @@ void finishVote(uint32_t now) {
     else Serial.printf(" | goc=%.1f do | %s | UWB=1", votes[winner].angle, NAMES[winner]);
     printFront(now);
     printOwner(now);
+    printSignal(now);
     Serial.println();
     lastDirection = winner;
     clearVotes();
@@ -381,6 +395,35 @@ void printFront(uint32_t now) {
     frontDistance = INFINITY; // Lay min moi cho lan hien thi tiep theo.
 }
 
+bool signalGood(float rx, float fp) {
+    return isfinite(rx) && isfinite(fp) && rx >= MIN_RX_DBM && rx < 0 &&
+           fp >= MIN_FP_DBM && fp < 0 && fabsf(rx-fp) < MAX_RX_FP_DB;
+}
+
+// Chi bao tin cay khi hai mau hien tai la cap da ghep, cung poll va <=80 ms.
+// Khong dung co nay de sua range, cali, Kalman hoac vote trong ban nay.
+bool uwbReliable(uint32_t now) {
+    float d1 = a1.range + (calibrated ? offset : 0);
+    return havePair && remotePoll == usedPoll && lastA2Flag == 1 &&
+           a1.poll == usedPoll && a2.poll == usedPoll &&
+           uint32_t(now-a1.time) <= MAX_AGE && uint32_t(now-a2.time) <= MAX_AGE &&
+           signalGood(a1.rx,a1.fp) && signalGood(a2.rx,a2.fp) && d1 > 0 && d1 <= MAX_RANGE &&
+           fabsf(d1-a2.range) <= L+0.03f && d1+a2.range >= L-0.03f;
+}
+
+void printSignal(uint32_t now) {
+    const Sample *samples[] = {&a1, &a2};
+    for (int i=0; i<2; ++i) {
+        const Sample &s = *samples[i];
+        bool recent = s.range > 0 && s.range <= MAX_RANGE && uint32_t(now-s.time) <= LOST_MS;
+        if (recent && isfinite(s.rx)) Serial.printf(" | RX%d=%.1f", i+1, s.rx);
+        else Serial.printf(" | RX%d=--", i+1);
+        if (recent && isfinite(s.fp)) Serial.printf(" FP%d=%.1f", i+1, s.fp);
+        else Serial.printf(" FP%d=--", i+1);
+    }
+    Serial.printf(" | TIN_CAY=%d", uwbReliable(now) ? 1 : 0);
+}
+
 // Cap A1/A2 nay da duoc ghep cung poll, khong lay hai cot log ghep lai.
 void setUwbReference(float d1, float d2, uint32_t now) {
     float x = (d1*d1 - d2*d2)/(2*L);
@@ -404,9 +447,9 @@ void printOwner(uint32_t now) {
     checkOwner(now);
     if (owner.locked) {
         float a = atan2f(owner.x-LIDAR_X_M, owner.y-LIDAR_Y_M)*180.0f/PI;
-        Serial.printf(" | goc_lidar=%.1f do | CHU=DA_KHOA", a);
-    } else if (owner.lost) Serial.print(" | goc_lidar=-- | CHU=MAT_CHU");
-    else Serial.printf(" | goc_lidar=-- | CHU=%s_%u/%u",
+        Serial.printf(" | ag_lidar=%.1f do | DA_KHOA", a);
+    } else if (owner.lost) Serial.print(" | ag_lidar=-- | MAT_CHU");
+    else Serial.printf(" | ag_lidar=-- | %s_%u/%u",
                        calibrated ? "CHO" : "CALIB", owner.votes, OWNER_VOTES);
 }
 

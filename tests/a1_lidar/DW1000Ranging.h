@@ -4,8 +4,11 @@ struct DW1000Device {
     struct Timestamp {uint64_t value=0; uint64_t getTimestamp(){return value;}} timePollSent;
     uint16_t address=0x007D;
     float range=1;
+    float rx=-80, fp=-82;
     uint16_t getShortAddress(){return address;}
     float getRange(){return range;}
+    float getRXPower(){return rx;}
+    float getFPPower(){return fp;}
 };
 struct Ranging {
     void initCommunication(int,int,int){}
